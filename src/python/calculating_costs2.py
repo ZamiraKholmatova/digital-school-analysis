@@ -261,6 +261,7 @@ class SharedModel:
             for chunk in pd.read_csv(path, chunksize=self.statistics_import_chunk_size, parse_dates=[date_field], **kwargs):
                 self.db.add_records(self.preprocess_chunk(chunk, path), "course_statistics")
             self.processed_files.append(filename)
+            self.has_new_data = True
 
     def entry_valid(self, profile_id, statistic_type_id, educational_course_id, created_at):
         profile_id = profile_id #entry["profile_id"]
@@ -925,6 +926,8 @@ class RegionReportWriter(ReportWriter):
             self.write_xlsx(["Данные по региону"], [data], [options], export_file_name)
             break
 
+        save_location = save_location.absolute()
+
         curr_dir = os.getcwd()
         os.chdir(self.html_path)
 
@@ -933,11 +936,11 @@ class RegionReportWriter(ReportWriter):
             mode='w'
         ) as zipper:
             for file in save_location.iterdir():
-                zipper.write(Path(region_report_folder).joinpath(file.name))
-
-        os.chdir(curr_dir)
+                if file.name.endswith(".xlsx"):
+                    zipper.write(Path(region_report_folder).joinpath(file.name))
 
         rmtree(save_location)
+        os.chdir(curr_dir)
 
 
 class BillingReportWriter(ReportWriter):
@@ -983,7 +986,24 @@ class SchoolActivityReportWriter(ReportWriter):
         return f"active_and_approved_by_schools_{self.last_export}"
 
     def write_index_html(self, name):
-        pass
+        html = f"""
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Отчет по платформам</title>
+</head>
+<body>
+<p>
+Последнее обновление: {self.last_export}
+</p>
+<p>
+<a id="region_arc" href="active_and_approved_by_schools_{self.last_export}.xlsx">Отчет по регионам</a>
+</p>
+</body>
+</html>
+"""
+        with open(self.html_path.joinpath("index_regions.html"), "w") as index_html:
+            index_html.write(html)
 
 
 def get_last_export(path):
@@ -1121,13 +1141,8 @@ def process_statistics(
             "Активно и подтвержд. по школам", reports.region_active_students_report, {"long_column": 1}
         )
         school_report_writer.save_report()
-
-
     else:
         logging.info("No new data")
-
-
-
 
 
 if __name__ == "__main__":
