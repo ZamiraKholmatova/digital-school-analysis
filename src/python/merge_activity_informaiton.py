@@ -42,8 +42,14 @@ def merge_activity_and_regions(dbs, region_info_path):
                 "ИНН": inn,
                 "Адрес": address,
                 "Всего учеников": 0,
+                # "Воспользовались 0 дней": 0,
+                "Воспользовались 1 день": 0,
+                "Воспользовались 2 дня": 0,
+                "Воспользовались 3 дня": 0,
+                "Воспользовались 4 дня": 0,
+                "Воспользовались 5 и более дней (лицензия на год при подтверждении уч.з.)": 0,
                 "Всего подтверждённых учеников": 0,
-                "Активных учеников": 0,
+                # "Активных учеников": 0,
                 "Активных и отклонённых": 0,
                 "Активных и подтрверждённых": 0,
                 "Всего преподавателей": 0,
@@ -64,11 +70,22 @@ def merge_activity_and_regions(dbs, region_info_path):
             if approved_status == "APPROVED":
                 current_record["Всего подтверждённых учеников"] += 1
             if active_days >= 5:
-                current_record["Активных учеников"] += 1
+                current_record["Воспользовались 5 и более дней (лицензия на год при подтверждении уч.з.)"] += 1
                 if approved_status == "APPROVED":
                     current_record["Активных и подтрверждённых"] += 1
                 elif approved_status == "NOT_APPROVED":
                     current_record["Активных и отклонённых"] += 1
+            elif active_days == 1:
+                current_record["Воспользовались 1 день"] += 1
+            elif active_days == 2:
+                current_record["Воспользовались 2 дня"] += 1
+            elif active_days == 3:
+                current_record["Воспользовались 3 дня"] += 1
+            elif active_days == 4:
+                current_record["Воспользовались 4 дня"] += 1
+            # else:
+            #     current_record["Воспользовались 0 дней"] += 1
+
 
     return pd.DataFrame.from_records(list(records.values()))
 

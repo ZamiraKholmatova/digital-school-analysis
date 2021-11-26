@@ -6,8 +6,10 @@ import sqlite3
 from collections import defaultdict, namedtuple
 from datetime import datetime
 from pathlib import Path
+from shutil import rmtree
 from time import sleep
 from typing import Optional
+from zipfile import ZipFile
 
 import numpy as np
 import pandas as pd
@@ -309,34 +311,41 @@ class SharedModel:
 
     def prepare_for_report(self):
 
-        self.full_report = self.db.query(
-            """
-            SELECT
-            platform, course_name, course_usage.profile_id, grade, approved_status, active_days
-            FROM (
-                SELECT 
-                platform, course_name, profile_id,
-                approved_status, role, COUNT(DISTINCT created_at) AS "active_days"
-                from (
-                    SELECT
-                    course_information.provider as "platform", 
-                    course_information.course_name as "course_name",
-                    course_statistics.profile_id as "profile_id", 
-                    profile_approved_status.approved_status as "approved_status", 
-                    profile_approved_status.role as "role",
-                    course_statistics.created_at as "created_at"
-                    from course_statistics 
-                    INNER JOIN course_information on course_statistics.educational_course_id = course_information.material_id
-                    LEFT JOIN profile_approved_status on course_statistics.profile_id = profile_approved_status.profile_id
-                    WHERE profile_approved_status.role = 'STUDENT'
-                ) 
-                GROUP BY platform, course_name, profile_id
-            ) as course_usage
-            LEFT JOIN student_grades on course_usage.profile_id = student_grades.profile_id
-            """
-        )
-        self.db.drop_table("full_report")
-        self.db.add_records(self.full_report, "full_report")
+        if self.has_new_data:
+            self.full_report = self.db.query(
+                """
+                SELECT
+                platform, course_name, course_usage.profile_id, grade, approved_status, active_days
+                FROM (
+                    SELECT 
+                    platform, course_name, profile_id,
+                    approved_status, role, COUNT(DISTINCT created_at) AS "active_days"
+                    from (
+                        SELECT
+                        course_information.provider as "platform", 
+                        course_information.course_name as "course_name",
+                        course_statistics.profile_id as "profile_id", 
+                        profile_approved_status.approved_status as "approved_status", 
+                        profile_approved_status.role as "role",
+                        course_statistics.created_at as "created_at"
+                        from course_statistics 
+                        INNER JOIN course_information on course_statistics.educational_course_id = course_information.material_id
+                        LEFT JOIN profile_approved_status on course_statistics.profile_id = profile_approved_status.profile_id
+                        WHERE profile_approved_status.role = 'STUDENT'
+                    ) 
+                    GROUP BY platform, course_name, profile_id
+                ) as course_usage
+                LEFT JOIN student_grades on course_usage.profile_id = student_grades.profile_id
+                """
+            )
+            self.db.drop_table("full_report")
+            self.db.add_records(self.full_report, "full_report")
+        else:
+            self.full_report = self.db.query(
+                """
+                SELECT * from full_report
+                """
+            )
 
     def sort_course_names(self, report_df):
         report_df.sort_values(
@@ -805,16 +814,27 @@ class ReportWriter:
                     writer.book, writer.sheets[sheet_name], data, long_column=options.get("long_column", None)
                 )
 
-    def write_index(self, name):
+    def write_index_html(self, name):
+        # <head>
+        # <meta http-equiv="refresh" content="0; url={name}.html" />
         html = f"""
 <html>
 <head>
-<meta http-equiv="refresh" content="0; url={name}.html" />
+<meta charset="UTF-8">
 <title>Отчет по платформам</title>
 </head>
 <body>
 <p>
-<a href="{name}.html">К отчету</a>
+Последнее обновление: {self.last_export}
+</p>
+<p>
+<a id="report" href="report_{self.last_export}.xlsx">Отчёт</a>
+</p>
+<p>
+<a id="billing" href="billing_report_{self.last_export}.xlsx">Биллинг</a>
+</p>
+<p>
+<a id="region_arc" href="region_report_{self.last_export}.zip">Отчет по регионам zip</a>
 </p>
 </body>
 </html>
@@ -853,14 +873,78 @@ class ReportWriter:
 
         self.write_xlsx(self.sheet_names, self.sheet_data, self.sheet_options, export_file_name)
         self.write_html(self.sheet_names, self.sheet_data, self.sheet_options, export_file_name)
-        self.write_index(export_file_name)
+        self.write_index_html(export_file_name)
+
+
+class RegionReportWriter(ReportWriter):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def add_region_info_as_sheets(self, region_report):
+        region_index = []
+
+        for ind, (region, data) in enumerate(tqdm(
+                region_report.groupby([
+                    "Регион"
+                ]),
+                desc="Preparing billing sheets", leave=False
+        )):
+            sheet_name = f"{ind + 1}"
+            region_index.append({
+                "Регион": region,
+                "Страница": sheet_name,
+            })
+            self.add_sheet(sheet_name,
+                           data.sort_values(["Всего учеников"], ascending=False),
+                           {"long_column": 1})
+
+        course_index_df = pd.DataFrame.from_records(region_index)
+
+        self.sheet_names.insert(0, "Индекс регионов")
+        self.sheet_data.insert(0, course_index_df)
+        self.sheet_options.insert(0, {"long_column": 1})
+
+    def get_report_name(self):
+        return f"region_report_{self.last_export}"
+
+    def save_report(self):
+        # export_file_name = self.get_report_name()
+
+        region_report_folder = f"region_report_{self.last_export}"
+
+        save_location = self.html_path.joinpath(region_report_folder)
+
+        if not save_location.is_dir():
+            save_location.mkdir()
+
+        for ind, (name, data, options) in enumerate(zip(self.sheet_names, self.sheet_data, self.sheet_options)):
+            if ind == 0:
+                continue
+            region_name = data.iloc[0, 0].replace("/", "")
+            export_file_name = os.path.join(region_report_folder, region_name)
+            self.write_xlsx(["Данные по региону"], [data], [options], export_file_name)
+            break
+
+        curr_dir = os.getcwd()
+        os.chdir(self.html_path)
+
+        with ZipFile(
+            region_report_folder + ".zip",
+            mode='w'
+        ) as zipper:
+            for file in save_location.iterdir():
+                zipper.write(Path(region_report_folder).joinpath(file.name))
+
+        os.chdir(curr_dir)
+
+        rmtree(save_location)
 
 
 class BillingReportWriter(ReportWriter):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def add_billing_into_as_sheets(self, billing_report):
+    def add_billing_info_as_sheets(self, billing_report):
         course_index = []
 
         for ind, ((platform, course), data) in enumerate(tqdm(
@@ -886,6 +970,20 @@ class BillingReportWriter(ReportWriter):
 
     def get_report_name(self):
         return f"billing_report_{self.last_export}"
+
+    def write_index_html(self, name):
+        pass
+
+
+class SchoolActivityReportWriter(ReportWriter):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def get_report_name(self):
+        return f"active_and_approved_by_schools_{self.last_export}"
+
+    def write_index_html(self, name):
+        pass
 
 
 def get_last_export(path):
@@ -1011,8 +1109,20 @@ def process_statistics(
         report_writer.save_report()
 
         billing_report_writer = BillingReportWriter(last_export, html_path, queries_path=Path(course_types).parent)
-        billing_report_writer.add_billing_into_as_sheets(reports.billing_report)
+        billing_report_writer.add_billing_info_as_sheets(reports.billing_report)
         billing_report_writer.save_report()
+
+        region_report_writer = RegionReportWriter(last_export, html_path, queries_path=Path(course_types).parent)
+        region_report_writer.add_region_info_as_sheets(reports.school_active_students_report)
+        region_report_writer.save_report()
+
+        school_report_writer = SchoolActivityReportWriter(last_export, html_path, queries_path=Path(course_types).parent)
+        school_report_writer.add_sheet(
+            "Активно и подтвержд. по школам", reports.region_active_students_report, {"long_column": 1}
+        )
+        school_report_writer.save_report()
+
+
     else:
         logging.info("No new data")
 
