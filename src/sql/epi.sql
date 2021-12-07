@@ -43,11 +43,14 @@ COPY (
     COUNT(CASE WHEN pei.role = 'TEACHER' AND pei.approved_status = 'NOT_APPROVED' THEN 1 ELSE NULL END) AS "Отклоненные преподаватели",
     COUNT(CASE WHEN pei.role = 'TEACHER' AND pei.approved_status = 'APPROVED' THEN 1 ELSE NULL END) AS "Подтвержденные преподаватели"
     FROM (
-        SELECT DISTINCT smartcode_id FROM smartcode_external_system
+        SELECT DISTINCT smartcode_id FROM (
+            SELECT smartcode_id FROM smartcode_external_system WHERE is_deleted = false
+        ) AS not_deleted
     ) AS activated
     LEFT JOIN smartcode ON activated.smartcode_id = smartcode.id
     LEFT JOIN profile_educational_institution AS pei ON pei.profile_id = smartcode.profile_id
     LEFT JOIN educational_institution AS eins ON pei.educational_institution_id = eins.id
+    WHERE smartcode.is_deleted = false AND pei.is_deleted = false
     GROUP BY eins.region, eins.short_name, eins.inn
 ) TO '/tmp/export_34625/Подтверждено_по_школам.csv' DELIMITER ',' CSV HEADER;
 

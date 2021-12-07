@@ -59,10 +59,11 @@ class SharedModel:
     def __init__(
             self, *, billing_info, student_grades, statistics_type, external_system,
             profile_educational_institution, course_structure, course_types, course_statistics, last_export,
-            resources_path
+            resources_path, freeze_date=None
     ):
         self.resources_path = Path(resources_path)
         self.statistics_import_chunk_size = 1000000
+        self.freeze_date = freeze_date
         self.set_paths()
         self.load_state()
 
@@ -310,43 +311,74 @@ class SharedModel:
 
         return active_days, logged_in_days
 
+    def get_full_report_query_string(self):
+        if self.freeze_date is None:
+            return """
+            SELECT
+            platform, course_name, course_usage.profile_id, grade, approved_status, active_days
+            FROM (
+                SELECT 
+                platform, course_name, profile_id,
+                approved_status, role, COUNT(DISTINCT created_at) AS "active_days"
+                from (
+                    SELECT
+                    course_information.provider as "platform", 
+                    course_information.course_name as "course_name",
+                    course_statistics.profile_id as "profile_id", 
+                    profile_approved_status.approved_status as "approved_status", 
+                    profile_approved_status.role as "role",
+                    course_statistics.created_at as "created_at"
+                    from course_statistics 
+                    INNER JOIN course_information on course_statistics.educational_course_id = course_information.material_id
+                    LEFT JOIN profile_approved_status on course_statistics.profile_id = profile_approved_status.profile_id
+                    WHERE profile_approved_status.role = 'STUDENT' AND approved_status != 'NOT_APPROVED'
+                ) 
+                GROUP BY platform, course_name, profile_id
+            ) as course_usage
+            LEFT JOIN student_grades on course_usage.profile_id = student_grades.profile_id
+            """
+        else:
+            return f"""
+            SELECT
+            platform, course_name, course_usage.profile_id, grade, approved_status, active_days
+            FROM (
+                SELECT 
+                platform, course_name, profile_id,
+                approved_status, role, COUNT(DISTINCT created_at) AS "active_days"
+                from (
+                    SELECT
+                    course_information.provider as "platform", 
+                    course_information.course_name as "course_name",
+                    course_statistics.profile_id as "profile_id", 
+                    profile_approved_status.approved_status as "approved_status", 
+                    profile_approved_status.role as "role",
+                    course_statistics.created_at as "created_at"
+                    from course_statistics 
+                    INNER JOIN course_information on course_statistics.educational_course_id = course_information.material_id
+                    LEFT JOIN profile_approved_status on course_statistics.profile_id = profile_approved_status.profile_id
+                    WHERE profile_approved_status.role = 'STUDENT' AND approved_status != 'NOT_APPROVED'
+                    AND course_statistics.created_at < '{self.freeze_date}'
+                ) 
+                GROUP BY platform, course_name, profile_id
+            ) as course_usage
+            LEFT JOIN student_grades on course_usage.profile_id = student_grades.profile_id
+            """
+
     def prepare_for_report(self):
 
-        if self.has_new_data:
-            self.full_report = self.db.query(
-                """
-                SELECT
-                platform, course_name, course_usage.profile_id, grade, approved_status, active_days
-                FROM (
-                    SELECT 
-                    platform, course_name, profile_id,
-                    approved_status, role, COUNT(DISTINCT created_at) AS "active_days"
-                    from (
-                        SELECT
-                        course_information.provider as "platform", 
-                        course_information.course_name as "course_name",
-                        course_statistics.profile_id as "profile_id", 
-                        profile_approved_status.approved_status as "approved_status", 
-                        profile_approved_status.role as "role",
-                        course_statistics.created_at as "created_at"
-                        from course_statistics 
-                        INNER JOIN course_information on course_statistics.educational_course_id = course_information.material_id
-                        LEFT JOIN profile_approved_status on course_statistics.profile_id = profile_approved_status.profile_id
-                        WHERE profile_approved_status.role = 'STUDENT'
-                    ) 
-                    GROUP BY platform, course_name, profile_id
-                ) as course_usage
-                LEFT JOIN student_grades on course_usage.profile_id = student_grades.profile_id
-                """
-            )
-            self.db.drop_table("full_report")
-            self.db.add_records(self.full_report, "full_report")
-        else:
-            self.full_report = self.db.query(
-                """
-                SELECT * from full_report
-                """
-            )
+        # if self.has_new_data:
+        self.full_report = self.db.query(
+            self.get_full_report_query_string()
+        )
+        self.full_report = self.full_report.astype({"grade": "Int32"})
+        self.db.drop_table("full_report")
+        self.db.add_records(self.full_report, "full_report")
+        # else:
+        #     self.full_report = self.db.query(
+        #         """
+        #         SELECT * from full_report
+        #         """
+        #     )
 
     def sort_course_names(self, report_df):
         report_df.sort_values(
@@ -361,7 +393,7 @@ class SharedModel:
         sum_total = []
         for provider in user_report["Платформа"]:
             table = courses_report.query(f"Платформа == '{provider}'")
-            licences.append(table["Активные Подтверждённые"].sum())
+            licences.append(table["Активные Всего"].sum())
             sum_total.append(table["Всего за курс"].sum())
 
         user_report["Общее количество лицензий на оплату"] = licences
@@ -425,6 +457,7 @@ class SharedModel:
         for (platform, course_name), course in self.full_report.groupby(["platform", "course_name"]):
             billing_key = (platform, course_name)
             course_price = self.billing_info.get(billing_key, 0.)
+            active = course.query("active_days >=5")["profile_id"].nunique()
             approved_and_active = course.query("active_days >=5 and approved_status == 'APPROVED'")["profile_id"].nunique()
             report.append({
                 "Платформа": platform,
@@ -432,9 +465,9 @@ class SharedModel:
                 # "Класс": grade,
                 "Всего": course["profile_id"].nunique(),
                 "Активные Подтверждённые": approved_and_active,
-                "Активные Всего": course.query("active_days >=5")["profile_id"].nunique(),
+                "Активные Всего": active,
                 "Цена за одну лицензию": course_price,
-                "Всего за курс": course_price * approved_and_active
+                "Всего за курс": course_price * active
             })
 
         self.courses_report = pd.DataFrame(report)
@@ -630,30 +663,9 @@ class Course_MEO(SharedModel):
             data = self.format_course_structure_columns(pd.read_csv(path, dtype={"material_id": "string"}))
             self.db.replace_records(data, "course_information")
 
-    def prepare_for_report(self):
-        # self.full_report = self.db.query(
-        #     """
-        #     SELECT
-        #     platform, course_name, course_usage.profile_id, grade, active_days
-        #     FROM (
-        #         SELECT
-        #         platform, course_name, profile_id, COUNT(DISTINCT created_at) AS "active_days"
-        #         from (
-        #             SELECT
-        #             course_information.provider as "platform",
-        #             course_information.course_name as "course_name",
-        #             course_statistics.profile_id as "profile_id",
-        #             course_statistics.created_at as "created_at"
-        #             from course_statistics
-        #             INNER JOIN course_information on course_statistics.educational_course_id = course_information.material_id
-        #         )
-        #         GROUP BY platform, course_name, profile_id
-        #     ) as course_usage
-        #     LEFT JOIN student_grades on course_usage.profile_id = student_grades.profile_id
-        #     """
-        # )
-        self.full_report = self.db.query(
-            """
+    def get_full_report_query_string(self):
+        if self.freeze_date is None:
+            return """
             SELECT
             platform, course_name, course_usage.profile_id, grade, approved_status, active_days
             FROM (
@@ -670,15 +682,44 @@ class Course_MEO(SharedModel):
                     from course_statistics 
                     INNER JOIN course_information on course_statistics.educational_course_id = course_information.material_id
                     LEFT JOIN profile_approved_status on course_statistics.profile_id = profile_approved_status.profile_id
+                    WHERE approved_status != 'NOT_APPROVED'
                 ) 
                 GROUP BY platform, course_name, profile_id
             ) as course_usage
             LEFT JOIN student_grades on course_usage.profile_id = student_grades.profile_id
             """
-        )
-        self.full_report = self.full_report.astype({"grade": "Int32"})
-        self.db.drop_table("full_report")
-        self.db.add_records(self.full_report, "full_report")
+        else:
+            return f"""
+            SELECT
+            platform, course_name, course_usage.profile_id, grade, approved_status, active_days
+            FROM (
+                SELECT 
+                platform, course_name, profile_id,
+                approved_status, COUNT(DISTINCT created_at) AS "active_days"
+                from (
+                    SELECT
+                    course_information.provider as "platform", 
+                    course_information.course_name as "course_name",
+                    course_statistics.profile_id as "profile_id", 
+                    profile_approved_status.approved_status as "approved_status", 
+                    course_statistics.created_at as "created_at"
+                    from course_statistics 
+                    INNER JOIN course_information on course_statistics.educational_course_id = course_information.material_id
+                    LEFT JOIN profile_approved_status on course_statistics.profile_id = profile_approved_status.profile_id
+                    WHERE course_statistics.created_at < '{self.freeze_date}' and approved_status != 'NOT_APPROVED'
+                ) 
+                GROUP BY platform, course_name, profile_id
+            ) as course_usage
+            LEFT JOIN student_grades on course_usage.profile_id = student_grades.profile_id
+            """
+
+    # def prepare_for_report(self):
+    #     self.full_report = self.db.query(
+    #         self.get_full_report_query_string()
+    #     )
+    #     self.full_report = self.full_report.astype({"grade": "Int32"})
+    #     self.db.drop_table("full_report")
+    #     self.db.add_records(self.full_report, "full_report")
 
 
 class Course_Uchi(SharedModel):
@@ -877,6 +918,14 @@ class ReportWriter:
         self.write_index_html(export_file_name)
 
 
+class CommonBillingReportWriter(ReportWriter):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def get_report_name(self):
+        return f"billing_report_{self.last_export}"
+
+
 class RegionReportWriter(ReportWriter):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -924,7 +973,6 @@ class RegionReportWriter(ReportWriter):
             region_name = data.iloc[0, 0].replace("/", "")
             export_file_name = os.path.join(region_report_folder, region_name)
             self.write_xlsx(["Данные по региону"], [data], [options], export_file_name)
-            break
 
         save_location = save_location.absolute()
 
@@ -972,7 +1020,7 @@ class BillingReportWriter(ReportWriter):
         self.sheet_options.insert(0, {"long_column": 1})
 
     def get_report_name(self):
-        return f"billing_report_{self.last_export}"
+        return f"billing_report_uchi_{self.last_export}"
 
     def write_index_html(self, name):
         pass
@@ -1022,7 +1070,7 @@ def enrich_user_report(user_report):
         }, {
             "Платформа": "Лицензий на человека",
             "Всего пользователей": total["Общее количество лицензий на оплату"] / total[
-                "Активных и подтверждённых пользователей"]
+                "Активных пользователей"]
         }
     ]
     total["Платформа"] = "Итого"
@@ -1068,7 +1116,8 @@ def get_reports(provider_data, region_info_path) -> Optional[Reports]:
 def process_statistics(
         *, billing, student_grades, statistics_type, external_system, profile_educational_institution,
         course_structure, course_structure_foxford, course_structure_meo, course_types, course_statistics, course_statistics_foxford,
-        course_statistics_uchi, course_statistics_meo, last_export, html_path, resources_path, region_info_path
+        course_statistics_uchi, course_statistics_meo, last_export, html_path, resources_path, region_info_path,
+        freeze_date
 ):
     last_export = get_last_export(last_export)
 
@@ -1079,25 +1128,27 @@ def process_statistics(
             billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
             external_system=external_system, profile_educational_institution=profile_educational_institution,
             course_structure=course_structure, course_types=course_types, course_statistics=course_statistics,
-            last_export=last_export, resources_path=resources_path
+            last_export=last_export, resources_path=resources_path, freeze_date=freeze_date
         ),
         Course_FoxFord(
             billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
             external_system=external_system, profile_educational_institution=profile_educational_institution,
             course_structure=course_structure_foxford, course_types=course_types,
-            course_statistics=course_statistics_foxford, last_export=last_export, resources_path=resources_path
+            course_statistics=course_statistics_foxford, last_export=last_export, resources_path=resources_path,
+            freeze_date=freeze_date
         ),
         Course_MEO(
             billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
             external_system=external_system, profile_educational_institution=profile_educational_institution,
             course_structure=course_structure_meo, course_types=course_types,
-            course_statistics=course_statistics_meo, last_export=last_export, resources_path=resources_path
+            course_statistics=course_statistics_meo, last_export=last_export, resources_path=resources_path,
+            freeze_date=freeze_date
         ),
         Course_Uchi(
             billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
             external_system=external_system, profile_educational_institution=profile_educational_institution,
             course_structure=course_structure, course_types=course_types, course_statistics=course_statistics_uchi,
-            last_export=last_export, resources_path=resources_path
+            last_export=last_export, resources_path=resources_path, freeze_date=freeze_date
         )
     ]
 
@@ -1128,8 +1179,17 @@ def process_statistics(
 
         report_writer.save_report()
 
+        common_billing_report_writer = CommonBillingReportWriter(last_export, html_path, queries_path=Path(course_types).parent)
+        common_billing_report_writer.add_sheet(
+            "ЦОК",
+            reports.billing_report.query("`Наименование образовательной цифровой площадки` != 'Учи.Ру'")
+        )
+        common_billing_report_writer.save_report()
+
         billing_report_writer = BillingReportWriter(last_export, html_path, queries_path=Path(course_types).parent)
-        billing_report_writer.add_billing_info_as_sheets(reports.billing_report)
+        billing_report_writer.add_billing_info_as_sheets(
+            reports.billing_report.query("`Наименование образовательной цифровой площадки` == 'Учи.Ру'")
+        )
         billing_report_writer.save_report()
 
         region_report_writer = RegionReportWriter(last_export, html_path, queries_path=Path(course_types).parent)
@@ -1138,7 +1198,7 @@ def process_statistics(
 
         school_report_writer = SchoolActivityReportWriter(last_export, html_path, queries_path=Path(course_types).parent)
         school_report_writer.add_sheet(
-            "Активно и подтвержд. по школам", reports.region_active_students_report, {"long_column": 1}
+            "Активно и подтвержд. по школам", reports.school_active_students_report, {"long_column": 1}
         )
         school_report_writer.save_report()
     else:
@@ -1164,6 +1224,7 @@ if __name__ == "__main__":
     parser.add_argument("--last_export", default=None)
     parser.add_argument("--html_path", default=None)
     parser.add_argument("--resources_path", default=None)
+    parser.add_argument("--freeze_date", default=None, type=str)
 
     args = parser.parse_args()
 
