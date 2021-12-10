@@ -48,7 +48,7 @@ class SQLTable:
         self.execute(
             f"""
                     CREATE INDEX IF NOT EXISTS idx_{table_name} 
-                    ON {table_name}({','.join(table.columns)})
+                    ON {table_name}({','.join(repr(col) for col in table.columns)})
                     """
         )
 
@@ -200,15 +200,6 @@ class SharedModel:
         data.rename({"provider_course_name": "course_id"}, axis=1, inplace=True)
         self.db.replace_records(data[["provider", "course_name", "course_id", "price"]], "billing_info")
 
-        # self.billing_info = dict(zip(
-        #     zip(data["provider"], data["course_name"]), data["price"]
-        #     # zip(data["short_name"], data["course_name"], data["grade"]), data["price"]
-        # ))
-
-    # def load_grade_description(self, path):
-    #     data = pd.read_csv(path)
-    #     self.grade_description = dict(zip(data["id"], data["grade"]))
-
     def load_student_grades(self, path):
         if self.has_new_data:
             # data = pd.read_csv(path, dtype={"grade": "Int32"}).rename({"id": "profile_id"}, axis=1)
@@ -216,23 +207,6 @@ class SharedModel:
             self.check_for_nas(data, "grade", path)
             self.convert_ids_to_int(data, ["profile_id"])
             self.db.replace_records(data[["profile_id", "profile_id_uuid", "grade"]], "student_grades")
-
-    # def load_role_descriptions(self, path):
-    #     if self.has_new_data:
-    #         data = pd.read_csv(path)
-    #         data["role_id"] = data["id"]
-    #         data["description"] = data["role"]
-    #         self.db.replace_records(data[["role_id", "description"]], "role_description")
-
-    # def load_statistics_type(self, path):
-    #     data = pd.read_csv(path)
-    #     self.statistics_type = dict(zip(data["id"], data["type_name"]))
-    #     # return {
-    #     #     "1ad6841e-2e64-4720-852c-fa2ad2fd5714": "login",
-    #     #     "8e4870de-468e-4bfa-9867-daa609693b49": "logout",
-    #     #     "ab201fae-44b7-4d4c-95f2-50bd0a0c1cb7": "started_studying",
-    #     #     "4f6c88b8-2131-4948-bd3c-b34e3d491171": "stopped_studying"
-    #     # }
 
     def load_external_system(self, path):
         # data = pd.read_csv(path)
@@ -430,9 +404,14 @@ class SharedModel:
         # chunk["created_at_original"] = chunk["created_at"]
         # chunk["created_at"] = chunk["created_at"].dt.normalize()
         self.convert_ids_to_int(chunk, ["profile_id", "educational_course_id"], add_new=False)
-        chunk["educational_course_id"] = chunk["educational_course_id"].apply(
-            lambda id_: self.educational_course_id2course_id.get(id_, pd.NA)
+        chunk.eval( # this lookup can fail only if convert_ids_to_int fails
+            "educational_course_id = educational_course_id.map(@resolve_id)",
+            local_dict={"resolve_id": lambda id_: self.educational_course_id2course_id.get(id_, pd.NA)},
+            inplace=True
         )
+        # chunk["educational_course_id"] = chunk["educational_course_id"].apply(
+        #     lambda id_: self.educational_course_id2course_id.get(id_, pd.NA)
+        # )
         for col in ["profile_id", "educational_course_id"]:
             self.check_for_nas(chunk, col, str(path.absolute()) + f"___unresolved", error_buffer=error_buffer)
         # self.check_for_nas(chunk, "educational_course_id", path.parent.joinpath("statistics_resolved_course_id"))
@@ -478,18 +457,6 @@ class SharedModel:
         assert isinstance(provider, str)
         assert isinstance(subject_name, str)
 
-    # def add_entry(self, person_id, provider, subject_name, created_at, statistics_type):
-    #     if person_id not in self.student_statistics:
-    #         self.student_statistics[person_id] = {}
-    #     if provider not in self.student_statistics[person_id]:
-    #         self.student_statistics[person_id][provider] = {}
-    #     if subject_name not in self.student_statistics[person_id][provider]:
-    #         self.student_statistics[person_id][provider][subject_name] = []
-    #
-    #     self.student_statistics[person_id][provider][subject_name].append((
-    #         created_at, statistics_type
-    #     ))
-
     def active_days(self, history):
         active_day_duration_minutes = 10
 
@@ -532,47 +499,6 @@ class SharedModel:
             extra_columns = ""
             return extra_columns
 
-    # def get_full_report_query_string(self):
-    #     if self.minute_activity:
-    #         active_days_request = 'COUNT(CASE WHEN is_active = true THEN 1 ELSE NULL END) AS "active_days"'
-    #         extra_columns = 'course_statistics.is_active as "is_active",'  # make sure has coma in the end
-    #     else:
-    #         extra_columns = ""
-    #         active_days_request = 'COUNT(DISTINCT created_at) AS "active_days"'
-    #     return f"""
-    #     SELECT
-    #     course_information.provider as "platform",
-    #     course_information.course_name as "course_name",
-    #     educational_course_id,
-    #     course_usage.profile_id, grade, approved_status, active_days, special_status
-    #     FROM (
-    #         SELECT
-    #         educational_course_id, profile_id,
-    #         approved_status, role,
-    #         {active_days_request},
-    #         special_status
-    #         FROM (
-    #             SELECT
-    #             course_statistics.profile_id as "profile_id",
-    #             course_statistics.educational_course_id as "educational_course_id",
-    #             profile_approved_status.approved_status as "approved_status",
-    #             profile_approved_status.role as "role",
-    #             course_statistics.created_at as "created_at",
-    #             {extra_columns}
-    #             educational_institution.special_status as "special_status"
-    #             FROM course_statistics
-    #             LEFT JOIN profile_approved_status ON
-    #             course_statistics.profile_id = profile_approved_status.profile_id
-    #             LEFT JOIN educational_institution ON
-    #             profile_approved_status.educational_institution_id = educational_institution.id
-    #             {self.get_filtration_rules()}
-    #         )
-    #         GROUP BY educational_course_id, profile_id
-    #     ) as course_usage
-    #     INNER JOIN course_information on course_usage.educational_course_id = course_information.material_id
-    #     LEFT JOIN student_grades on course_usage.profile_id = student_grades.profile_id
-    #     """
-
     def compute_active_days(self, minimum_active_minutes=10.0):
         seconds_in_minute = 60
 
@@ -594,45 +520,6 @@ class SharedModel:
                         pd.to_datetime(chunk["day_end"]) - pd.to_datetime(chunk["day_start"])
                 ).map(lambda x: x.seconds / seconds_in_minute > minimum_active_minutes)
                 self.db.add_records(chunk, "course_statistics")
-
-            # daily_activity = defaultdict(
-            #     lambda: {
-            #         "start_time": None,
-            #         "end_time": None,
-            #         "difference_min": None
-            #     }
-            # )
-            #
-            # for chunk in course_statistics:
-            #     for profile_id, educational_course_id, created_at, created_at_original in chunk.values:
-            #         created_at_original = pd.to_datetime(created_at_original)
-            #         created_at = pd.to_datetime(created_at)
-            #         key = (profile_id, educational_course_id, created_at)
-            #
-            #         value = daily_activity[key]
-            #         updated = False
-            #         if value["start_time"] is None or value["start_time"] > created_at_original:
-            #             value["start_time"] = created_at_original
-            #             updated = True
-            #         if value["end_time"] is None or value["end_time"] < created_at_original:
-            #             value["end_time"] = created_at_original
-            #             updated = True
-            #         if updated:
-            #             value["difference_min"] = (value["end_time"] - value["start_time"]).seconds / 60
-            #
-            # records = []
-            #
-            # for key, value in daily_activity.items():
-            #     profile_id, educational_course_id, created_at = key
-            #     records.append({
-            #         "profile_id": profile_id,
-            #         "educational_course_id": educational_course_id,
-            #         "created_at": created_at,
-            #         "active_day": value["difference_min"] >= 10
-            #     })
-            #
-            # daily_activity = pd.DataFrame.from_records(records)
-            # self.db.replace_records(daily_activity, "course_statistics_min")
 
     def prepare_for_report(self):
 
@@ -681,23 +568,12 @@ class SharedModel:
                 """
             )
 
-            # query_string = self.get_full_report_query_string()
         self.full_report = self.db.query(
             """
             SELECT * from full_report
             """
         )
-
         self.db.create_index_for_table(self.full_report, "full_report")
-        # self.full_report = self.full_report.astype({"grade": "Int32"})
-        # self.db.drop_table("full_report")
-        # self.db.add_records(self.full_report, "full_report")
-        # else:
-        #     self.full_report = self.db.query(
-        #         """
-        #         SELECT * from full_report
-        #         """
-        #     )
 
     def sort_course_names(self, report_df, order):
         for column in order:
@@ -725,24 +601,30 @@ class SharedModel:
 
     def convergence_stat(self):
 
-        active_data = self.db.query(
-            """
-            SELECT
-            platform as "Активных дней",
-            COUNT(CASE WHEN active_days >= 2 THEN 1 ELSE NULL END) as "2 дня",
-            COUNT(CASE WHEN active_days >= 3 THEN 1 ELSE NULL END) as "3 дня",
-            COUNT(CASE WHEN active_days >= 4 THEN 1 ELSE NULL END) as "4 дня",
-            COUNT(CASE WHEN active_days >= 5 THEN 1 ELSE NULL END) as "5 дня и более",
-            COUNT(profile_id) as "Всего пользоателей"
-            FROM (
+        if self.has_new_data:
+            self.db.drop_table("active_data")
+
+            self.db.execute(
+                """
+                CREATE TABLE active_data AS
                 SELECT
-                platform, profile_id, max(active_days) as "active_days"
-                FROM full_report
-                GROUP BY platform, profile_id
+                platform as "Активных дней",
+                COUNT(DISTINCT CASE WHEN active_days >= 2 THEN profile_id ELSE NULL END) as "2 дня и более",
+                COUNT(DISTINCT CASE WHEN active_days >= 3 THEN profile_id ELSE NULL END) as "3 дня и более",
+                COUNT(DISTINCT CASE WHEN active_days >= 4 THEN profile_id ELSE NULL END) as "4 дня и более",
+                COUNT(DISTINCT CASE WHEN active_days >= 5 THEN profile_id ELSE NULL END) as "5 дней и более",
+                COUNT(profile_id) as "Всего пользоателей"
+                FROM (
+                    SELECT
+                    platform, profile_id, max(active_days) as "active_days"
+                    FROM full_report
+                    GROUP BY platform, profile_id
+                )
+                GROUP BY platform
+                """
             )
-            GROUP BY platform
-            """
-        ).set_index("Активных дней").T
+
+        active_data = self.db.query("SELECT * FROM active_data").set_index("Активных дней").T
 
         col_order = []
 
@@ -755,101 +637,71 @@ class SharedModel:
 
     def prepare_report(self):
 
-        user_report = []
-        # timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+        if self.has_new_data:
+            self.db.drop_table("user_report")
+            self.db.drop_table("courses_report")
 
-        self.user_report = self.db.query(
-            """
-            SELECT
-            platform as "Платформа",
-            COUNT(DISTINCT profile_id) as "Всего пользователей",
-            COUNT(CASE WHEN active_days >= 5 THEN 1 ELSE NULL END) as "Активных пользователей",
-            COUNT(CASE WHEN approved_status = 'APPROVED' AND 
-                        (
-                                special_status = 'Получено адресатом' OR special_status == 'Активировали в ноябре'
-                        ) THEN 1 ELSE NULL END) as "Подтверждённых пользователей использующих сервис",
-            COUNT(CASE WHEN approved_status = 'APPROVED' AND active_days >= 5 AND 
-                        (
-                                special_status = 'Получено адресатом' OR special_status == 'Активировали в ноябре'
-                        ) THEN 1 ELSE NULL END) as "Активных и подтверждённых пользователей"
-            FROM
-            full_report
-            GROUP BY
-            platform
-            """
-        )
-
-        # for platform, course in self.full_report.groupby("platform"):
-        #     user_report.append({
-        #         "Платформа": platform,
-        #         "Всего пользователей": course["profile_id"].nunique(),
-        #         "Активных пользователей": course.query("active_days >=5")["profile_id"].nunique(),
-        #         # "Подтверждённых пользователей использующих сервис": course.query("approved_status == 'APPROVED'")["profile_id"].nunique(),
-        #         "Подтверждённых пользователей использующих сервис": course.query(f"approved_status == 'APPROVED' and (special_status == 'Получено адресатом' or special_status == 'Aктивировали в ноябре')")["profile_id"].nunique(),
-        #         # "Активных и подтверждённых пользователей": course.query("active_days >=5 and approved_status == 'APPROVED'")["profile_id"].nunique(),
-        #         "Активных и подтверждённых пользователей": course.query(f"active_days >= 5 and approved_status == 'APPROVED' and (special_status == 'Получено адресатом' or special_status == 'Aктивировали в ноябре')")["profile_id"].nunique(),
-        #     })
-
-        self.courses_report = self.db.query(
-            """
-            SELECT
-            Платформа,
-            Название, 
-            Всего,
-            "Активные Подтверждённые", 
-            "Активные Всего",
-            price as "Цена за одну лицензию",
-            price * "Активные Подтверждённые" AS "Всего за курс"
-            FROM (
+            self.db.execute(
+                """
+                CREATE TABLE user_report AS
                 SELECT
-                course_id,
                 platform as "Платформа",
-                course_name as "Название",
-                COUNT(DISTINCT profile_id) as "Всего",
-                COUNT(CASE WHEN active_days >=5 AND approved_status == 'APPROVED' AND 
-                        (
-                            special_status == 'Получено адресатом' OR special_status == 'Активировали в ноябре'
-                        ) THEN 1 ELSE NULL END) AS "Активные Подтверждённые",
-                COUNT(CASE WHEN active_days >=5 THEN 1 ELSE NULL END) AS "Активные Всего"
+                COUNT(DISTINCT profile_id) as "Всего пользователей",
+                COUNT(DISTINCT CASE WHEN active_days >= 5 THEN profile_id ELSE NULL END) as "Активных пользователей",
+                COUNT(DISTINCT CASE WHEN approved_status = 'APPROVED' AND 
+                            (
+                                    special_status = 'Получено адресатом' OR special_status == 'Активировали в ноябре'
+                            ) THEN profile_id ELSE NULL END) as "Подтверждённых пользователей использующих сервис",
+                COUNT(DISTINCT CASE WHEN approved_status = 'APPROVED' AND active_days >= 5 AND 
+                            (
+                                    special_status = 'Получено адресатом' OR special_status == 'Активировали в ноябре'
+                            ) THEN profile_id ELSE NULL END) as "Активных и подтверждённых пользователей"
                 FROM
                 full_report
                 GROUP BY
-                platform, course_name
-            ) AS usage 
-            LEFT JOIN billing_info on usage.course_id = billing_info.course_id
-            """
-        )
+                platform
+                """
+            )
 
-        # report = []
-        #
-        # for (platform, course_name), course in self.full_report.groupby(
-        #         ["platform", "course_name"]
-        # ):
-        #     billing_key = (platform, course_name)
-        #     course_price = self.billing_info.get(billing_key, 0.)
-        #     active = course.query("active_days >=5")["profile_id"].nunique()
-        #     # approved_and_active = course.query("active_days >=5 and approved_status == 'APPROVED'")["profile_id"].nunique()
-        #     approved_and_active = course.query(f"active_days >=5 and approved_status == 'APPROVED' and (special_status == 'Получено адресатом' or special_status == 'Активировали в ноябре')")["profile_id"].nunique()
-        #     report.append({
-        #         "Платформа": platform,
-        #         "Название": course_name,
-        #         # "Класс": grade,
-        #         "Всего": course["profile_id"].nunique(),
-        #         "Активные Подтверждённые": approved_and_active,
-        #         "Активные Всего": active,
-        #         "Цена за одну лицензию": course_price,
-        #         "Всего за курс": course_price * approved_and_active
-        #     })
-        #
-        # self.courses_report = pd.DataFrame(report)
+            # this query has THEN 1 because one person can take one course only once
+            # no need to do DISTINCT
+            self.db.execute(
+                """
+                CREATE TABLE courses_report AS
+                SELECT
+                Платформа,
+                Название, 
+                Всего,
+                "Активные Подтверждённые", 
+                "Активные Всего",
+                price as "Цена за одну лицензию",
+                price * "Активные Подтверждённые" AS "Всего за курс"
+                FROM (
+                    SELECT
+                    course_id,
+                    platform as "Платформа",
+                    course_name as "Название",
+                    COUNT(DISTINCT profile_id) as "Всего",
+                    COUNT(CASE WHEN active_days >=5 AND approved_status == 'APPROVED' AND 
+                            (
+                                special_status == 'Получено адресатом' OR special_status == 'Активировали в ноябре'
+                            ) THEN 1 ELSE NULL END) AS "Активные Подтверждённые",
+                    COUNT(CASE WHEN active_days >=5 THEN 1 ELSE NULL END) AS "Активные Всего"
+                    FROM
+                    full_report
+                    GROUP BY
+                    platform, course_name
+                ) AS usage 
+                LEFT JOIN billing_info on usage.course_id = billing_info.course_id
+                """
+            )
+
+        self.user_report = self.db.query("SELECT * FROM user_report")
+        self.courses_report = self.db.query("SELECT * FROM courses_report")
 
         self.sort_course_names(self.courses_report, order=["Название", "Платформа"])
-        # self.courses_report.to_csv(f"{self.__class__.__name__}_report_{timestamp}.csv", index=False)
-        # self.user_report = pd.DataFrame(user_report)
-        # # self.user_report.to_csv(f"{self.__class__.__name__}_user_report_{timestamp}.csv", index=False)
 
     def get_report(self):
-        # if self.has_new_data:
         self.prepare_for_report()
         self.prepare_report()
         self.convergence_stat()
@@ -858,107 +710,84 @@ class SharedModel:
         return self.courses_report, self.user_report, self._conv_stat
 
     def get_people_for_billing(self, num_days_to_be_considered_active=5):
-        self.db.drop_table("billing")
-        self.db.execute(
-            f"""
-            CREATE TABLE billing AS
-            SELECT platform, course_name, profile_id, profile_id_uuid, special_status
-            FROM full_report
-            WHERE approved_status = 'APPROVED' 
-            AND special_status NOT NULL 
-            AND active_days >= {num_days_to_be_considered_active}
-            """
-        )
+        if self.has_new_data:
+            self.db.drop_table("billing")
+            self.db.drop_table("people_billing_report")
 
-        people_courses_for_billing = self.db.query("SELECT * FROM billing") \
-            .drop("special_status", axis=1) \
-            .drop("profile_id", axis=1) \
-            .rename({"profile_id_uuid": "profile_id"}, axis=1)
+            self.db.execute(
+                f"""
+                CREATE TABLE billing AS
+                SELECT platform, course_name, profile_id, profile_id_uuid, special_status
+                FROM full_report
+                WHERE approved_status = 'APPROVED' 
+                AND special_status NOT NULL 
+                AND active_days >= {num_days_to_be_considered_active}
+                """
+            )
 
-        # people_approved_date = self.db.query(
-        #     f"""
-        #     SELECT profile_id, updated_at as "approved_date"
-        #     FROM profile_approved_status
-        #     """
-        # )
-        # people_approved_date = dict(zip(people_approved_date["profile_id"], people_approved_date["approved_date"]))
+            people_courses_for_billing = self.db.query("SELECT * FROM billing") \
+                .drop("special_status", axis=1) \
+                .drop("profile_id", axis=1) \
+                .rename({"profile_id_uuid": "profile_id"}, axis=1)
 
-        people_courses_filter = set(
-            (pl, c, per) for pl, c, per in people_courses_for_billing.values
-        )
+            people_courses_filter = set(
+                (pl, c, per) for pl, c, per in people_courses_for_billing.values
+            )
 
-        # pre_billing = self.db.query(
-        #     """
-        #     SELECT
-        #     profile_id, course_name, provider, created_at as "visit_date"
-        #     FROM (
-        #         SELECT
-        #         *
-        #         FROM course_statistics AS a
-        #         WHERE (a.profile_id, a.educational_course_id, a.created_at) IN (
-        #               SELECT DISTINCT b.profile_id, b.educational_course_id, b.created_at
-        #               FROM course_statistics AS b
-        #               WHERE a.profile_id = b.profile_id and a.educational_course_id = b.educational_course_id
-        #               ORDER BY b.created_at
-        #               LIMIT 5
-        #          )
-        #     )
-        #     LEFT JOIN course_information on educational_course_id = material_id
-        #     """,
-        #     chunksize=self.statistics_import_chunk_size
-        # )
-        course_statistics = self.db.query(  # can improve filtration by adding course name to the filter
-            """
-            SELECT 
-            DISTINCT provider, course_name, profile_id_uuid as "profile_id", created_at as "visit_date" 
-            FROM 
-            course_statistics
-            LEFT JOIN course_information ON course_statistics.educational_course_id = course_information.course_id
-            LEFT JOIN profile_approved_status ON course_statistics.profile_id = profile_approved_status.profile_id
-            WHERE course_statistics.profile_id IN (
-                SELECT DISTINCT profile_id FROM billing
-            ) 
-            ORDER BY created_at
-            """,
-            chunksize=self.statistics_import_chunk_size
-        )
+            course_statistics = self.db.query(  # can improve filtration by adding course name to the filter
+                """
+                SELECT 
+                DISTINCT provider, course_name, profile_id_uuid as "profile_id", created_at as "visit_date" 
+                FROM 
+                course_statistics
+                LEFT JOIN course_information ON course_statistics.educational_course_id = course_information.course_id
+                LEFT JOIN profile_approved_status ON course_statistics.profile_id = profile_approved_status.profile_id
+                WHERE course_statistics.profile_id IN (
+                    SELECT DISTINCT profile_id FROM billing
+                ) 
+                ORDER BY created_at
+                """,
+                chunksize=self.statistics_import_chunk_size
+            )
 
-        people_courses_visits = defaultdict(list)
-        for chunk in course_statistics:
-            for provider, course_name, profile_id, visit_date in chunk[
-                ["provider", "course_name", "profile_id", "visit_date"]
-            ].values:
-                key = (provider, course_name, profile_id)
-                if key not in people_courses_filter:
-                    continue
-                if len(people_courses_visits[key]) == num_days_to_be_considered_active:
-                    continue
-                people_courses_visits[key].append(visit_date)
+            people_courses_visits = defaultdict(list)
+            for chunk in course_statistics:
+                for provider, course_name, profile_id, visit_date in chunk[
+                    ["provider", "course_name", "profile_id", "visit_date"]
+                ].values:
+                    key = (provider, course_name, profile_id)
+                    if key not in people_courses_filter:
+                        continue
+                    if len(people_courses_visits[key]) == num_days_to_be_considered_active:
+                        continue
+                    people_courses_visits[key].append(visit_date)
 
-        records = []
-        for key, dates in people_courses_visits.items():
-            assert len(dates) == num_days_to_be_considered_active
-            platform, course_name, profile_id = key
-            record = {
-                "Наименование образовательной цифровой площадки": platform,
-                "Наименование ЦОК": course_name,
-                "Идентификационный номер обучающегося": profile_id,
-            }
+            records = []
+            for key, dates in people_courses_visits.items():
+                assert len(dates) == num_days_to_be_considered_active
+                platform, course_name, profile_id = key
+                record = {
+                    "Наименование образовательной цифровой площадки": platform,
+                    "Наименование ЦОК": course_name,
+                    "Идентификационный номер обучающегося": profile_id,
+                }
 
-            for ind, date in enumerate(dates):
-                record[f"День {ind}"] = date.split(" ")[0]
+                for ind, date in enumerate(dates):
+                    record[f"День {ind + 1}"] = date.split(" ")[0]
 
-            # record["Дата подтверждения обучающегося"] = people_approved_date[profile_id].split(" ")[0]
+                records.append(record)
 
-            records.append(record)
+            data = pd.DataFrame.from_records(records, columns=[
+                "Наименование образовательной цифровой площадки",
+                "Наименование ЦОК",
+                "Идентификационный номер обучающегося",
+            ] + [f"День {ind + 1}" for ind in range(num_days_to_be_considered_active)]).astype("string")
+            if len(data) > 0:
+                self.sort_course_names(data, ["Наименование ЦОК", "Наименование образовательной цифровой площадки"])
 
-        data = pd.DataFrame.from_records(records, columns=[
-            "Наименование образовательной цифровой площадки",
-            "Наименование ЦОК",
-            "Идентификационный номер обучающегося",
-        ]).astype("string")
-        if len(data) > 0:
-            self.sort_course_names(data, ["Наименование ЦОК", "Наименование образовательной цифровой площадки"])
+            self.db.add_records(data, "people_billing_report")
+
+        data = self.db.query("SELECT * FROM people_billing_report")
 
         return data
 
@@ -1072,18 +901,6 @@ class Course_MEO(SharedModel):
                     "course_name", "provider", "course_id"]],
                 "course_information"
             )
-
-    # def get_filtration_rules(self):
-    #     filtration_rules = "WHERE approved_status != 'NOT_APPROVED'"
-    #     return filtration_rules
-
-    # def prepare_for_report(self):
-    #     self.full_report = self.db.query(
-    #         self.get_full_report_query_string()
-    #     )
-    #     self.full_report = self.full_report.astype({"grade": "Int32"})
-    #     self.db.drop_table("full_report")
-    #     self.db.add_records(self.full_report, "full_report")
 
 
 class Course_Uchi(SharedModel):
