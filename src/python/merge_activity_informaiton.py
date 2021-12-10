@@ -14,7 +14,7 @@ def merge_activity_and_regions(dbs, region_info_path):
         tables.append(db.query(
             """
             SELECT
-            profile_id, active_days
+            profile_id_uuid as "profile_id", active_days
             FROM 
             full_report
             """
@@ -23,7 +23,8 @@ def merge_activity_and_regions(dbs, region_info_path):
     full_activity = pd.concat(tables, axis=0)
     activity = full_activity.groupby(["profile_id"]).max()
 
-    region_info = pd.read_csv(region_info_path, dtype={"ИНН": "string"})
+    # region_info = pd.read_csv(region_info_path, dtype={"ИНН": "string"})
+    region_info = pd.read_pickle(region_info_path, compression=None)
     merged = region_info.merge(activity, left_on="profile_id", right_on="profile_id", how="left")
 
     # records = []

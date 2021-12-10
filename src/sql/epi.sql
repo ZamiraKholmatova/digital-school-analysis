@@ -1,6 +1,15 @@
 COPY profile_role  TO '/tmp/export_34625/profile_role_16.11.csv' DELIMITER ',' CSV HEADER;
 COPY role(id, role)  TO '/tmp/export_34625/role_16.11.csv' DELIMITER ',' CSV HEADER;
-COPY profile_educational_institution  TO '/tmp/export_34625/profile_educational_institution_16.11.csv' DELIMITER ',' CSV HEADER;
+--COPY profile_educational_institution  TO '/tmp/export_34625/profile_educational_institution_16.11.csv' DELIMITER ',' CSV HEADER;
+COPY (
+    SELECT
+    profile_id, educational_institution_id, approved_status, role, profile_educational_institution.updated_at,
+    profile_educational_confirmation_log.updated_at as "approval_date"
+    FROM
+    profile_educational_institution
+    LEFT JOIN profile_educational_confirmation_log on (profile_educational_institution.id = profile_educational_confirmation_log.profile_educational_institution_id)
+) TO '/tmp/export_34625/profile_educational_institution_16.11.csv' DELIMITER ',' CSV HEADER;
+COPY educational_institution  TO '/tmp/export_34625/educational_institution_16.11.csv' DELIMITER ',' CSV HEADER;
 COPY external_system(id, short_name, system_code)  TO '/tmp/export_34625/external_system_16.11.csv' DELIMITER ',' CSV HEADER;
 --COPY student(id, grade) TO '/tmp/export_34625/student_16.11.csv' DELIMITER ',' CSV HEADER;
 COPY (

@@ -2,12 +2,12 @@ import argparse
 import json
 import logging
 import os
+import pickle
 import sqlite3
 from collections import defaultdict, namedtuple
 from datetime import datetime
 from pathlib import Path
 from shutil import rmtree
-from time import sleep
 from typing import Optional
 from zipfile import ZipFile
 
@@ -37,10 +37,20 @@ class SQLTable:
         self.path = filename
 
     def replace_records(self, table, table_name):
-        table.to_sql(table_name, con=self.conn, if_exists='replace', index=False, index_label=table.columns)
+        table.to_sql(table_name, con=self.conn, if_exists='replace', index=False)
+        self.create_index_for_table(table, table_name)
 
     def add_records(self, table, table_name):
-        table.to_sql(table_name, con=self.conn, if_exists='append', index=False, index_label=table.columns)
+        table.to_sql(table_name, con=self.conn, if_exists='append', index=False)
+        self.create_index_for_table(table, table_name)
+
+    def create_index_for_table(self, table, table_name):
+        self.execute(
+            f"""
+                    CREATE INDEX IF NOT EXISTS idx_{table_name} 
+                    ON {table_name}({','.join(table.columns)})
+                    """
+        )
 
     def query(self, query_string, **kwargs):
         return pd.read_sql(query_string, self.conn, **kwargs)
@@ -51,6 +61,7 @@ class SQLTable:
 
     def drop_table(self, table_name):
         self.conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+        self.conn.execute(f"DROP INDEX IF EXISTS idx_{table_name}")
         self.conn.commit()
 
     def __del__(self):
@@ -76,24 +87,25 @@ class SharedModel:
 
         self.set_new_data_flag(last_export)
 
-        self.load_billing_info(billing_info)
         # self.load_grade_description(grade_description)
         self.load_student_grades(student_grades)
-        self.load_statistics_type(statistics_type)
+        # self.load_statistics_type(statistics_type)
         self.load_external_system(external_system)
         self.load_educational_institution(educational_institution)
         self.load_course_types(course_types)
         self.load_profile_approved_status(profile_educational_institution)
         self.load_course_structure(course_structure)
+        self.load_billing_info(billing_info)
         self.load_course_statistics(course_statistics)
         if self.minute_activity:
             self.compute_active_days()
-        self.corrupted = []
-        self.student_statistics = {}
+        # self.corrupted = []
+        # self.student_statistics = {}
 
     def set_paths(self):
         self.state_file_path = self.resources_path.joinpath(f"{self.__class__.__name__}___state_file.json")
         self.db_path = self.resources_path.joinpath(f"{self.__class__.__name__}.db")
+        self.mappings_path = self.resources_path.joinpath(f"{self.__class__.__name__}___mappings.pkl")
 
     def __del__(self):
         self.save_state()
@@ -106,6 +118,7 @@ class SharedModel:
                     "last_processed_export": self.last_processed_export
                 })
             )
+        self.save_mappings()
 
     def load_state(self):
         if self.state_file_path.is_file():
@@ -117,146 +130,255 @@ class SharedModel:
             self.processed_files = []
             self.last_processed_export = ""
 
+        self.load_mappings()
+
     def set_new_data_flag(self, last_export):
         self.last_export = last_export
         self.has_new_data = self.last_export != self.last_processed_export
 
-    def check_for_nas(self, data, field, path):
+    def load_mappings(self):
+        if self.mappings_path.is_file():
+            self.mappings = pickle.load(open(self.mappings_path, "rb"))
+        else:
+            self.mappings = {}
+
+    def save_mappings(self):
+        pickle.dump(self.mappings, open(self.mappings_path, "wb"))
+
+    def add_missing_to_mapping(self, ids, mapping):
+        for id_ in ids:
+            if id_ not in mapping:
+                mapping[id_] = len(mapping)
+
+    def convert_ids_to_int(self, table, columns, add_new=True):
+        for column in columns:
+            if column not in self.mappings:
+                mapping = {}
+                self.mappings[column] = mapping
+            else:
+                mapping = self.mappings[column]
+            uuid_name = f"{column}_uuid"
+            if add_new:
+                self.add_missing_to_mapping(table[column].unique(), mapping)
+            table.eval(f"{uuid_name} = {column}", inplace=True)
+            table.eval(
+                f"{column} = {column}.map(@mapping)",
+                local_dict={"mapping": lambda id_: mapping.get(id_, pd.NA)},
+                inplace=True
+            )
+            # table[uuid_name] = table[column]
+            # table[column] = table[column].apply(lambda id_: mapping.get(id_, pd.NA))  # should fail for unknown ids
+            if add_new:
+                assert table[uuid_name].nunique() == table[column].nunique()
+
+    def check_for_nas(self, data, field, path, error_buffer=None):
         if data[field].hasnans:
             nan_data = data[data[field].isna()]
             path = Path(path)
             parent = path.parent
             name = path.name
-            nan_data.to_csv(parent.joinpath(f"___{name}___{field}_nas.tsv"), index=False, sep="\t")
+            error_filename = parent.joinpath(f"___{name}___{field}_nas.tsv")
+            if error_buffer is None:
+                nan_data.to_csv(error_filename, index=False, sep="\t")
+            else:
+                if error_filename in error_buffer:
+                    error_buffer[error_filename] = error_buffer[error_filename].append(nan_data)
+                else:
+                    error_buffer[error_filename] = nan_data
             data.dropna(subset=[field], inplace=True)
 
         return data
 
     def load_billing_info(self, path):
-        data = pd.read_csv(path, dtype={"price": "Float32"})
-        data.dropna(subset=["price"], inplace=True)
-        data.drop_duplicates(subset=["short_name", "course_name"], inplace=True)
-        self.billing_info = dict(zip(
-            zip(data["short_name"], data["course_name"]), data["price"]
-        # zip(data["short_name"], data["course_name"], data["grade"]), data["price"]
-        ))
+        data = pd.read_csv(path, dtype={"price": "Float32"}).rename({"short_name": "provider"}, axis=1)
+        # data.dropna(subset=["price"], inplace=True)
+        data.eval("price = price.fillna(0.)", inplace=True)
+        data.drop_duplicates(subset=["provider", "course_name"], inplace=True)
+        data.eval("provider_course_name = provider + course_name", inplace=True)
+        self.convert_ids_to_int(data, ["provider_course_name"])
+        data.drop("provider_course_name_uuid", axis=1, inplace=True)
+        data.rename({"provider_course_name": "course_id"}, axis=1, inplace=True)
+        self.db.replace_records(data[["provider", "course_name", "course_id", "price"]], "billing_info")
 
-    def load_grade_description(self, path):
-        data = pd.read_csv(path)
-        self.grade_description = dict(zip(data["id"], data["grade"]))
+        # self.billing_info = dict(zip(
+        #     zip(data["provider"], data["course_name"]), data["price"]
+        #     # zip(data["short_name"], data["course_name"], data["grade"]), data["price"]
+        # ))
+
+    # def load_grade_description(self, path):
+    #     data = pd.read_csv(path)
+    #     self.grade_description = dict(zip(data["id"], data["grade"]))
 
     def load_student_grades(self, path):
         if self.has_new_data:
-            data = pd.read_csv(path, dtype={"grade": "Int32"})
+            # data = pd.read_csv(path, dtype={"grade": "Int32"}).rename({"id": "profile_id"}, axis=1)
+            data = pd.read_pickle(path, compression=None).rename({"id": "profile_id"}, axis=1)
             self.check_for_nas(data, "grade", path)
-            data["profile_id"] = data["id"]
-            self.db.replace_records(data[["profile_id", "grade"]], "student_grades")
+            self.convert_ids_to_int(data, ["profile_id"])
+            self.db.replace_records(data[["profile_id", "profile_id_uuid", "grade"]], "student_grades")
 
-    def load_role_descriptions(self, path):
-        if self.has_new_data:
-            data = pd.read_csv(path)
-            data["role_id"] = data["id"]
-            data["description"] = data["role"]
-            self.db.replace_records(data[["role_id", "description"]], "role_description")
+    # def load_role_descriptions(self, path):
+    #     if self.has_new_data:
+    #         data = pd.read_csv(path)
+    #         data["role_id"] = data["id"]
+    #         data["description"] = data["role"]
+    #         self.db.replace_records(data[["role_id", "description"]], "role_description")
 
-    def load_statistics_type(self, path):
-        data = pd.read_csv(path)
-        self.statistics_type = dict(zip(data["id"], data["type_name"]))
-        # return {
-        #     "1ad6841e-2e64-4720-852c-fa2ad2fd5714": "login",
-        #     "8e4870de-468e-4bfa-9867-daa609693b49": "logout",
-        #     "ab201fae-44b7-4d4c-95f2-50bd0a0c1cb7": "started_studying",
-        #     "4f6c88b8-2131-4948-bd3c-b34e3d491171": "stopped_studying"
-        # }
+    # def load_statistics_type(self, path):
+    #     data = pd.read_csv(path)
+    #     self.statistics_type = dict(zip(data["id"], data["type_name"]))
+    #     # return {
+    #     #     "1ad6841e-2e64-4720-852c-fa2ad2fd5714": "login",
+    #     #     "8e4870de-468e-4bfa-9867-daa609693b49": "logout",
+    #     #     "ab201fae-44b7-4d4c-95f2-50bd0a0c1cb7": "started_studying",
+    #     #     "4f6c88b8-2131-4948-bd3c-b34e3d491171": "stopped_studying"
+    #     # }
 
     def load_external_system(self, path):
-        data = pd.read_csv(path)
+        # data = pd.read_csv(path)
+        data = pd.read_pickle(path, compression=None)
         self.external_system = dict(zip(data["system_code"], data["short_name"]))
+
+    def read_paper_letters_info(self, path):
+        cached = str(path.absolute()).replace(".xlsx", ".bz2")
+        if Path(cached).is_file():
+            letters_status = pd.read_pickle(cached, compression=None)
+        else:
+            letters_status = pd.read_excel(
+                path, dtype={"ИНН": "string"}
+            )
+            letters_status.to_pickle(cached, compression=None)
+        return letters_status[["ИНН", "Статус письма"]]
+
+    def read_schools_approved_in_november(self, path):
+        cached = str(path.absolute()).replace(".xlsx", ".bz2")
+        if Path(cached).is_file():
+            november_schools = pd.read_pickle(cached, compression=None)
+        else:
+            november_schools = pd.read_excel(
+                path, dtype={"ИНН": "string"}
+            )
+            november_schools.to_pickle(cached, compression=None)
+        return november_schools[["ИНН"]]
+
+    def merge_special_status(self, paper_letters, approved_in_november):
+        approved_status = paper_letters.copy()
+
+        approved_in_november = set(
+            approved_in_november["ИНН"]
+        )
+
+        activated_in_november_status = "Активировали в ноябре"
+
+        special_status_records = []
+        for ind, row in approved_status.iterrows():
+            rec = {
+                "inn": row["ИНН"],
+                "special_status": row["Статус письма"]
+            }
+            if pd.isna(rec["special_status"]) and rec["inn"] in approved_in_november:
+                rec["special_status"] = activated_in_november_status
+            special_status_records.append(rec)
+
+        for school in approved_in_november - set(approved_status["ИНН"]):
+            rec = {
+                "inn": school,
+                "special_status": activated_in_november_status
+            }
+            special_status_records.append(rec)
+
+        special_status = pd.DataFrame.from_records(special_status_records)
+        return special_status
 
     def load_educational_institution(self, path):
         if self.has_new_data:
             path = Path(path)
-            data = pd.read_csv(path, dtype={"inn": "string"})
-            approved_status = pd.read_excel(
-                path.parent.joinpath("статистика_по_школам_за_7_декабря_2.xlsx"), dtype={"ИНН": "string"}
+            # data = pd.read_csv(path, dtype={"inn": "string"}) \
+            #     .rename({"id": "educational_institution_id"}, axis=1)
+            data = pd.read_pickle(path, compression=None) \
+                .rename({"id": "educational_institution_id"}, axis=1)
+
+            paper_letters = self.read_paper_letters_info(path.parent.joinpath("schools_paper_letters.xlsx"))
+
+            approved_in_november = self.read_schools_approved_in_november(
+                path.parent.joinpath("schools_approved_in_november.xlsx")
             )
-            as_back = approved_status
-            approved_status = approved_status[
-                ["ИНН", "letter_received_status"]
-            ]
-            november_schools = set(pd.read_excel(
-                path.parent.joinpath("школы_подвердившие_учеников_в_ноябре.xlsx"), dtype={"ИНН": "string"}
-            )["ИНН"])
 
+            special_status = self.merge_special_status(paper_letters, approved_in_november)
 
-            ac = []
-            for ind, row in approved_status.iterrows():
-                rec = {
-                    "ИНН": row["ИНН"],
-                    "letter_received_status": row["letter_received_status"]
-                }
-                if pd.isna(rec["letter_received_status"]) and rec["ИНН"] in november_schools:
-                    rec["letter_received_status"] = "активировали в ноябре"
-                ac.append(rec)
+            paper_letters.merge(special_status, how="outer", left_on="ИНН", right_on="inn").to_csv("schools_special_status.csv", index=False)
 
-            for school in november_schools - set(approved_status["ИНН"]):
-                rec = {
-                    "ИНН": school,
-                    "letter_received_status": "активировали в ноябре"
-                }
-                ac.append(rec)
+            merged = data.merge(special_status, how="left", left_on="inn", right_on="inn").drop("inn", axis=1)
 
-            approved_status = pd.DataFrame.from_records(ac)
+            self.convert_ids_to_int(merged, ["educational_institution_id"])
 
-            as_back.merge(approved_status, how="outer", on="ИНН").to_csv("schools_letters.csv", index=False)
-
-            merged = data.merge(approved_status, how="left", left_on="inn", right_on="ИНН").drop("ИНН",  axis=1)
-
-            # assert (merged["letter_received_status"].value_counts() == approved_status["letter_received_status"].value_counts()).all()
-
-            merged = merged[["id", "letter_received_status"]]
-
-            self.db.replace_records(merged, "educational_institution")
-
+            self.db.replace_records(
+                merged[["educational_institution_id", "educational_institution_id_uuid", "special_status"]],
+                "educational_institution"
+            )
 
     def load_profile_approved_status(self, path):
         if self.has_new_data:
-            data = pd.read_csv(path)
-            self.db.replace_records(data[["profile_id", "approved_status", "role", "updated_at", "educational_institution_id"]], "profile_approved_status")
+            # data = pd.read_csv(path)
+            data = pd.read_pickle(path, compression=None)
+            self.convert_ids_to_int(data, ["profile_id", "educational_institution_id"])
+
+            self.db.replace_records(
+                data[[
+                    "profile_id", "profile_id_uuid", "approved_status", "role",
+                    "educational_institution_id", "educational_institution_id_uuid"
+                ]], "profile_approved_status")  # updated_at
 
     def format_course_structure_columns(self, data):
-        fields = ["id", "deleted", "course_type_id", "parent_id", "external_link", "course_name", "external_id",
-                  "external_parent_id", "system_code"]
+        # fields = ["id", "deleted", "course_type_id", "parent_id", "external_link", "course_name", "external_id",
+        #           "external_parent_id", "system_code"]
         return data
 
-    def validate_structure_id(self, id, parent_id, structure):
-        assert id not in structure
+    def validate_structure_id(self, id_, parent_id, structure):
+        assert id_ not in structure
+
+    def resolve_structure(self, data):
+        fields = data.columns
+        structure = {}
+        for ind, row in data.iterrows():
+            self.validate_structure_id(row["id"], row["parent_id"], structure)
+            structure[row["id"]] = {key: row[key] for key in fields}
+        self.structure = structure
+
+        mapping = []
+        for id_ in structure:
+            course_name, provider = self.find_subject(id_)
+            mapping.append({
+                "educational_course_id": id_,
+                "course_name": course_name,
+                "provider": provider
+            })
+        return pd.DataFrame(mapping)
+
+    def prepare_course_ids(self, data):
+        data.eval("provider_course_name = provider + course_name", inplace=True)
+        self.convert_ids_to_int(data, ["educational_course_id", "provider_course_name"])
+        data.eval("course_id = provider_course_name", inplace=True)
+        self.educational_course_id2course_id = dict(zip(data["educational_course_id"], data["course_id"]))
+        return data
 
     def load_course_structure(self, path):
         if self.has_new_data:
             data = self.format_course_structure_columns(pd.read_csv(path))
-            fields = data.columns
-            structure = {}
-            for ind, row in data.iterrows():
-                self.validate_structure_id(row["id"], row["parent_id"], structure)
-                structure[row["id"]] = {key: row[key] for key in fields}
-            self.structure = structure
-
-            mapping = []
-            for id_ in structure:
-                course_name, provider = self.find_subject(id_)
-                mapping.append({
-                    "material_id": id_,
-                    "course_name": course_name,
-                    "provider": provider
-                })
-            data = pd.DataFrame(mapping)
-            self.db.replace_records(data, "course_information")
+            data = self.resolve_structure(data)
+            data = self.prepare_course_ids(data)
+            self.db.replace_records(
+                data[[
+                    "educational_course_id", "educational_course_id_uuid",
+                    "course_name", "provider", "course_id"]],
+                "course_information"
+            )
 
     def load_course_types(self, path):
-        data = pd.read_csv(path)
+        # data = pd.read_csv(path)
+        data = pd.read_pickle(path, compression=None)
         self.course_types = {
-            id: type_name for id, type_name in data.values
+            id_: type_name for id_, type_name in data.values
         }
 
     def get_course_type(self, type_id):
@@ -294,18 +416,29 @@ class SharedModel:
     def map_course_statistics_columns(self, data):
         pass
 
-    def preprocess_chunk(self, chunk: pd.DataFrame, path, drop_duplicates=False):
+    def preprocess_chunk(self, chunk: pd.DataFrame, path, error_buffer, drop_duplicates=False):
+        path = Path(path)
         self.map_course_statistics_columns(chunk)
         column_order = ["profile_id", "educational_course_id", "created_at"]
         chunk = chunk[column_order]
         # chunk.dropna(axis=0, inplace=True)
         for col in column_order:
-            self.check_for_nas(chunk, col, path)
+            self.check_for_nas(chunk, col, path, error_buffer=error_buffer)
             # chunk = chunk[~chunk[col].isnull()]
-        chunk["created_at_original"] = chunk["created_at"]
-        chunk["created_at"] = chunk["created_at"].dt.normalize()
+        chunk.eval("created_at_original = created_at", inplace=True)
+        chunk.eval("created_at = created_at.dt.normalize()", inplace=True)
+        # chunk["created_at_original"] = chunk["created_at"]
+        # chunk["created_at"] = chunk["created_at"].dt.normalize()
+        self.convert_ids_to_int(chunk, ["profile_id", "educational_course_id"], add_new=False)
+        chunk["educational_course_id"] = chunk["educational_course_id"].apply(
+            lambda id_: self.educational_course_id2course_id.get(id_, pd.NA)
+        )
+        for col in ["profile_id", "educational_course_id"]:
+            self.check_for_nas(chunk, col, str(path.absolute()) + f"___unresolved", error_buffer=error_buffer)
+        # self.check_for_nas(chunk, "educational_course_id", path.parent.joinpath("statistics_resolved_course_id"))
         if drop_duplicates:
             chunk.drop_duplicates(subset=column_order, inplace=True)
+        chunk.drop(["profile_id_uuid", "educational_course_id_uuid"], axis=1, inplace=True)
         return chunk
 
     def prepare_statistics_table(self):
@@ -316,14 +449,21 @@ class SharedModel:
         target_table = "course_statistics" if self.minute_activity is False else "course_statistics_pre"
         filename = os.path.basename(path)
         if filename not in self.processed_files:
-            for chunk in pd.read_csv(path, chunksize=self.statistics_import_chunk_size, parse_dates=[date_field], **kwargs):
-                self.db.add_records(self.preprocess_chunk(chunk, path, drop_duplicates=not self.minute_activity), target_table)
+            error_buffer = {}
+            for ind, chunk in enumerate(pd.read_csv(
+                    path, chunksize=self.statistics_import_chunk_size, parse_dates=[date_field], **kwargs
+            )):
+                self.db.add_records(
+                    self.preprocess_chunk(chunk, path, error_buffer, drop_duplicates=not self.minute_activity), target_table
+                )
+            for error_file, content in error_buffer.items():
+                content.to_csv(error_file, index=False, sep="\t")
             self.processed_files.append(filename)
             self.has_new_data = True
 
     def entry_valid(self, profile_id, statistic_type_id, educational_course_id, created_at):
-        profile_id = profile_id #entry["profile_id"]
-        course_id = educational_course_id # entry["educational_course_id"]
+        profile_id = profile_id  # entry["profile_id"]
+        course_id = educational_course_id  # entry["educational_course_id"]
         if isinstance(profile_id, float) and isnan(profile_id):
             return False
         elif isinstance(course_id, float) and isnan(course_id) or pd.isna(course_id):
@@ -332,23 +472,23 @@ class SharedModel:
             return True
 
     def validate_course(self, subject_name, course_type, provider):
-        if subject_name == course_type == provider == None:
+        if subject_name is None and course_type is None and provider is None:
             return
         assert course_type == "ЦОМ"
         assert isinstance(provider, str)
         assert isinstance(subject_name, str)
 
-    def add_entry(self, person_id, provider, subject_name, created_at, statistics_type):
-        if person_id not in self.student_statistics:
-            self.student_statistics[person_id] = {}
-        if provider not in self.student_statistics[person_id]:
-            self.student_statistics[person_id][provider] = {}
-        if subject_name not in self.student_statistics[person_id][provider]:
-            self.student_statistics[person_id][provider][subject_name] = []
-
-        self.student_statistics[person_id][provider][subject_name].append((
-            created_at, statistics_type
-        ))
+    # def add_entry(self, person_id, provider, subject_name, created_at, statistics_type):
+    #     if person_id not in self.student_statistics:
+    #         self.student_statistics[person_id] = {}
+    #     if provider not in self.student_statistics[person_id]:
+    #         self.student_statistics[person_id][provider] = {}
+    #     if subject_name not in self.student_statistics[person_id][provider]:
+    #         self.student_statistics[person_id][provider][subject_name] = []
+    #
+    #     self.student_statistics[person_id][provider][subject_name].append((
+    #         created_at, statistics_type
+    #     ))
 
     def active_days(self, history):
         active_day_duration_minutes = 10
@@ -368,106 +508,74 @@ class SharedModel:
 
         return active_days, logged_in_days
 
-    def get_full_report_query_string(self):
-        if self.freeze_date is None:
-            date_filter = ""
-        else:
-            date_filter = f"AND course_statistics.created_at < '{self.freeze_date}'"
-        return f"""
-        SELECT
-        platform, course_name, course_usage.profile_id, grade, approved_status, active_days, letter_received_status, updated_at
-        FROM (
-            SELECT
-            platform, course_name, profile_id,
-            approved_status, role, COUNT(DISTINCT created_at) AS "active_days", letter_received_status, updated_at
-            from (
-                SELECT
-                course_information.provider as "platform",
-                course_information.course_name as "course_name",
-                course_statistics.profile_id as "profile_id",
-                profile_approved_status.approved_status as "approved_status",
-                profile_approved_status.role as "role",
-                course_statistics.created_at as "created_at",
-                educational_institution.letter_received_status as "letter_received_status",
-                profile_approved_status.updated_at as "updated_at"
-                from course_statistics
-                INNER JOIN course_information on course_statistics.educational_course_id = course_information.material_id
-                LEFT JOIN profile_approved_status on course_statistics.profile_id = profile_approved_status.profile_id
-                LEFT JOIN educational_institution on profile_approved_status.educational_institution_id = educational_institution.id
-                WHERE profile_approved_status.role = 'STUDENT' AND approved_status != 'NOT_APPROVED'
-                {date_filter}
-            )
-            GROUP BY platform, course_name, profile_id
-        ) as course_usage
-        LEFT JOIN student_grades on course_usage.profile_id = student_grades.profile_id
-        """
+    def get_filtration_rules(self):
+        filtration_rules = "WHERE profile_approved_status.role = 'STUDENT' AND approved_status != 'NOT_APPROVED'"
+        return filtration_rules
 
-    def get_full_report_query_string(self):  # min
-        if self.freeze_date is None:
-            return """
-            SELECT
-            platform, course_name, course_usage.profile_id, grade, approved_status, active_days, letter_received_status
-            FROM (
-                SELECT
-                platform, course_name, profile_id,
-                approved_status, role, 
-                COUNT(CASE WHEN is_active = true THEN 1 ELSE NULL END) AS "active_days", 
-                letter_received_status
-                from (
-                    SELECT
-                    course_information.provider as "platform",
-                    course_information.course_name as "course_name",
-                    target_table.profile_id as "profile_id",
-                    profile_approved_status.approved_status as "approved_status",
-                    profile_approved_status.role as "role",
-                    target_table.created_at as "created_at",
-                    educational_institution.letter_received_status as "letter_received_status",
-                    profile_approved_status.updated_at as "updated_at",
-                    target_table.is_active as "is_active"
-                    from target_table
-                    INNER JOIN course_information on target_table.educational_course_id = course_information.material_id
-                    LEFT JOIN profile_approved_status on target_table.profile_id = profile_approved_status.profile_id
-                    LEFT JOIN educational_institution on profile_approved_status.educational_institution_id = educational_institution.id
-                    WHERE profile_approved_status.role = 'STUDENT' AND approved_status != 'NOT_APPROVED'
-                )
-                GROUP BY platform, course_name, profile_id
-            ) as course_usage
-            LEFT JOIN student_grades on course_usage.profile_id = student_grades.profile_id
-            """
+    def get_freeze_date_filtration_rule(self):
+        if self.freeze_date is not None:
+            return f"WHERE course_statistics.created_at < '{self.freeze_date}'"
         else:
-            return f"""
-            SELECT
-            platform, course_name, course_usage.profile_id, grade, approved_status, active_days, letter_received_status
-            FROM (
-                SELECT
-                platform, course_name, profile_id,
-                approved_status, role, 
-                COUNT(CASE WHEN is_active = true THEN 1 ELSE NULL END) AS "active_days",  
-                letter_received_status
-                from (
-                    SELECT
-                    course_information.provider as "platform",
-                    course_information.course_name as "course_name",
-                    target_table.profile_id as "profile_id",
-                    profile_approved_status.approved_status as "approved_status",
-                    profile_approved_status.role as "role",
-                    target_table.created_at as "created_at",
-                    educational_institution.letter_received_status as "letter_received_status",
-                    profile_approved_status.updated_at as "updated_at",
-                    target_table.is_active as "is_active"
-                    from target_table
-                    INNER JOIN course_information on target_table.educational_course_id = course_information.material_id
-                    LEFT JOIN profile_approved_status on target_table.profile_id = profile_approved_status.profile_id
-                    LEFT JOIN educational_institution on profile_approved_status.educational_institution_id = educational_institution.id
-                    WHERE profile_approved_status.role = 'STUDENT' AND approved_status != 'NOT_APPROVED'
-                    AND target_table.created_at < '{self.freeze_date}'
-                )
-                GROUP BY platform, course_name, profile_id
-            ) as course_usage
-            LEFT JOIN student_grades on course_usage.profile_id = student_grades.profile_id
-            """
+            return ""
 
-    def compute_active_days(self):
+    def get_active_days_count_rule(self):
+        if self.minute_activity:
+            active_days_request = 'COUNT(CASE WHEN is_active = true THEN 1 ELSE NULL END)'
+        else:
+            active_days_request = 'COUNT(DISTINCT created_at)'
+        return active_days_request
+
+    def get_extra_column_names(self):
+        if self.minute_activity:
+            extra_columns = 'course_statistics.is_active as "is_active",'  # make sure has coma in the end
+        else:
+            extra_columns = ""
+            return extra_columns
+
+    # def get_full_report_query_string(self):
+    #     if self.minute_activity:
+    #         active_days_request = 'COUNT(CASE WHEN is_active = true THEN 1 ELSE NULL END) AS "active_days"'
+    #         extra_columns = 'course_statistics.is_active as "is_active",'  # make sure has coma in the end
+    #     else:
+    #         extra_columns = ""
+    #         active_days_request = 'COUNT(DISTINCT created_at) AS "active_days"'
+    #     return f"""
+    #     SELECT
+    #     course_information.provider as "platform",
+    #     course_information.course_name as "course_name",
+    #     educational_course_id,
+    #     course_usage.profile_id, grade, approved_status, active_days, special_status
+    #     FROM (
+    #         SELECT
+    #         educational_course_id, profile_id,
+    #         approved_status, role,
+    #         {active_days_request},
+    #         special_status
+    #         FROM (
+    #             SELECT
+    #             course_statistics.profile_id as "profile_id",
+    #             course_statistics.educational_course_id as "educational_course_id",
+    #             profile_approved_status.approved_status as "approved_status",
+    #             profile_approved_status.role as "role",
+    #             course_statistics.created_at as "created_at",
+    #             {extra_columns}
+    #             educational_institution.special_status as "special_status"
+    #             FROM course_statistics
+    #             LEFT JOIN profile_approved_status ON
+    #             course_statistics.profile_id = profile_approved_status.profile_id
+    #             LEFT JOIN educational_institution ON
+    #             profile_approved_status.educational_institution_id = educational_institution.id
+    #             {self.get_filtration_rules()}
+    #         )
+    #         GROUP BY educational_course_id, profile_id
+    #     ) as course_usage
+    #     INNER JOIN course_information on course_usage.educational_course_id = course_information.material_id
+    #     LEFT JOIN student_grades on course_usage.profile_id = student_grades.profile_id
+    #     """
+
+    def compute_active_days(self, minimum_active_minutes=10.0):
+        seconds_in_minute = 60
+
         if self.has_new_data:
             self.db.drop_table("course_statistics")
             chunks = self.db.query(
@@ -476,13 +584,15 @@ class SharedModel:
                 profile_id, educational_course_id, created_at, 
                 min(created_at_original) as day_start, max(created_at_original) as day_end  
                 FROM 
-                course_statistics
+                course_statistics_pre
                 GROUP BY profile_id, educational_course_id, created_at
                 """, chunksize=self.statistics_import_chunk_size
             )
 
             for chunk in chunks:
-                chunk["is_active"] = (pd.to_datetime(chunk["day_end"]) - pd.to_datetime(chunk["day_start"])).map(lambda x: x.seconds / 60 > 10)
+                chunk["is_active"] = (
+                        pd.to_datetime(chunk["day_end"]) - pd.to_datetime(chunk["day_start"])
+                ).map(lambda x: x.seconds / seconds_in_minute > minimum_active_minutes)
                 self.db.add_records(chunk, "course_statistics")
 
             # daily_activity = defaultdict(
@@ -524,16 +634,64 @@ class SharedModel:
             # daily_activity = pd.DataFrame.from_records(records)
             # self.db.replace_records(daily_activity, "course_statistics_min")
 
-
     def prepare_for_report(self):
 
-        # if self.has_new_data:
+        if self.has_new_data:
+            for table_name in ["active_days_count", "full_report"]:
+                self.db.drop_table(table_name)
+
+            self.db.execute(
+                f"""
+                CREATE TABLE active_days_count AS
+                SELECT
+                educational_course_id, profile_id,
+                {self.get_active_days_count_rule()} AS "active_days"
+                FROM 
+                course_statistics
+                {self.get_freeze_date_filtration_rule()}
+                GROUP BY educational_course_id, profile_id
+                """
+            )
+
+            self.db.execute(
+                f"""
+                CREATE TABLE full_report AS
+                SELECT
+                course_titles.provider as "platform",
+                course_titles.course_name as "course_name",
+                profile_approved_status.profile_id as "profile_id",
+                profile_approved_status.profile_id_uuid as "profile_id_uuid",
+                profile_approved_status.approved_status as "approved_status",
+                profile_approved_status.role as "role",
+                active_days_count.active_days as "active_days",
+                active_days_count.educational_course_id as "course_id",
+                educational_institution.special_status as "special_status"
+                FROM active_days_count
+                LEFT JOIN profile_approved_status ON 
+                active_days_count.profile_id = profile_approved_status.profile_id
+                LEFT JOIN educational_institution ON 
+                profile_approved_status.educational_institution_id = educational_institution.educational_institution_id
+                INNER JOIN (
+                    SELECT DISTINCT provider, course_name, course_id
+                    FROM course_information
+                ) as course_titles
+                on active_days_count.educational_course_id = course_titles.course_id
+                LEFT JOIN student_grades on active_days_count.profile_id = student_grades.profile_id
+                {self.get_filtration_rules()}
+                """
+            )
+
+            # query_string = self.get_full_report_query_string()
         self.full_report = self.db.query(
-            self.get_full_report_query_string()
+            """
+            SELECT * from full_report
+            """
         )
-        self.full_report = self.full_report.astype({"grade": "Int32"})
-        self.db.drop_table("full_report")
-        self.db.add_records(self.full_report, "full_report")
+
+        self.db.create_index_for_table(self.full_report, "full_report")
+        # self.full_report = self.full_report.astype({"grade": "Int32"})
+        # self.db.drop_table("full_report")
+        # self.db.add_records(self.full_report, "full_report")
         # else:
         #     self.full_report = self.db.query(
         #         """
@@ -541,13 +699,11 @@ class SharedModel:
         #         """
         #     )
 
-    def sort_course_names(self, report_df):
-        report_df.sort_values(
-            by="Название", key=lambda x: np.argsort(index_natsorted(report_df["Название"])), inplace=True
-        )
-        report_df.sort_values(
-            by="Платформа", key=lambda x: np.argsort(index_natsorted(report_df["Платформа"])), inplace=True
-        )
+    def sort_course_names(self, report_df, order):
+        for column in order:
+            report_df.sort_values(
+                by=column, key=lambda x: np.argsort(index_natsorted(report_df[column])), inplace=True
+            )
 
     def add_licence_info(self, user_report: pd.DataFrame, courses_report: pd.DataFrame):
         licences = []
@@ -597,48 +753,100 @@ class SharedModel:
 
         self._conv_stat = active_data[col_order]
 
-
     def prepare_report(self):
 
         user_report = []
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+        # timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
 
-        for platform, course in self.full_report.groupby("platform"):
-            user_report.append({
-                "Платформа": platform,
-                "Всего пользователей": course["profile_id"].nunique(),
-                "Активных пользователей": course.query("active_days >=5")["profile_id"].nunique(),
-                # "Подтверждённых пользователей использующих сервис": course.query("approved_status == 'APPROVED'")["profile_id"].nunique(),
-                "Подтверждённых пользователей использующих сервис": course.query(f"approved_status == 'APPROVED' and (letter_received_status == 'Получено адресатом' or letter_received_status == 'активировали в ноябре')")["profile_id"].nunique(),
-                # "Активных и подтверждённых пользователей": course.query("active_days >=5 and approved_status == 'APPROVED'")["profile_id"].nunique(),
-                "Активных и подтверждённых пользователей": course.query(f"active_days >= 5 and approved_status == 'APPROVED' and (letter_received_status == 'Получено адресатом' or letter_received_status == 'активировали в ноябре')")["profile_id"].nunique(),
-            })
+        self.user_report = self.db.query(
+            """
+            SELECT
+            platform as "Платформа",
+            COUNT(DISTINCT profile_id) as "Всего пользователей",
+            COUNT(CASE WHEN active_days >= 5 THEN 1 ELSE NULL END) as "Активных пользователей",
+            COUNT(CASE WHEN approved_status = 'APPROVED' AND 
+                        (
+                                special_status = 'Получено адресатом' OR special_status == 'Активировали в ноябре'
+                        ) THEN 1 ELSE NULL END) as "Подтверждённых пользователей использующих сервис",
+            COUNT(CASE WHEN approved_status = 'APPROVED' AND active_days >= 5 AND 
+                        (
+                                special_status = 'Получено адресатом' OR special_status == 'Активировали в ноябре'
+                        ) THEN 1 ELSE NULL END) as "Активных и подтверждённых пользователей"
+            FROM
+            full_report
+            GROUP BY
+            platform
+            """
+        )
 
-        report = []
+        # for platform, course in self.full_report.groupby("platform"):
+        #     user_report.append({
+        #         "Платформа": platform,
+        #         "Всего пользователей": course["profile_id"].nunique(),
+        #         "Активных пользователей": course.query("active_days >=5")["profile_id"].nunique(),
+        #         # "Подтверждённых пользователей использующих сервис": course.query("approved_status == 'APPROVED'")["profile_id"].nunique(),
+        #         "Подтверждённых пользователей использующих сервис": course.query(f"approved_status == 'APPROVED' and (special_status == 'Получено адресатом' or special_status == 'Aктивировали в ноябре')")["profile_id"].nunique(),
+        #         # "Активных и подтверждённых пользователей": course.query("active_days >=5 and approved_status == 'APPROVED'")["profile_id"].nunique(),
+        #         "Активных и подтверждённых пользователей": course.query(f"active_days >= 5 and approved_status == 'APPROVED' and (special_status == 'Получено адресатом' or special_status == 'Aктивировали в ноябре')")["profile_id"].nunique(),
+        #     })
 
-        for (platform, course_name), course in self.full_report.groupby(["platform", "course_name"]):
-            billing_key = (platform, course_name)
-            course_price = self.billing_info.get(billing_key, 0.)
-            active = course.query("active_days >=5")["profile_id"].nunique()
-            # approved_and_active = course.query("active_days >=5 and approved_status == 'APPROVED'")["profile_id"].nunique()
-            approved_and_active = course.query(f"active_days >=5 and approved_status == 'APPROVED' and (letter_received_status == 'Получено адресатом' or letter_received_status == 'активировали в ноябре')")["profile_id"].nunique()
-            report.append({
-                "Платформа": platform,
-                "Название": course_name,
-                # "Класс": grade,
-                "Всего": course["profile_id"].nunique(),
-                "Активные Подтверждённые": approved_and_active,
-                "Активные Всего": active,
-                "Цена за одну лицензию": course_price,
-                "Всего за курс": course_price * approved_and_active
-            })
+        self.courses_report = self.db.query(
+            """
+            SELECT
+            Платформа,
+            Название, 
+            Всего,
+            "Активные Подтверждённые", 
+            "Активные Всего",
+            price as "Цена за одну лицензию",
+            price * "Активные Подтверждённые" AS "Всего за курс"
+            FROM (
+                SELECT
+                course_id,
+                platform as "Платформа",
+                course_name as "Название",
+                COUNT(DISTINCT profile_id) as "Всего",
+                COUNT(CASE WHEN active_days >=5 AND approved_status == 'APPROVED' AND 
+                        (
+                            special_status == 'Получено адресатом' OR special_status == 'Активировали в ноябре'
+                        ) THEN 1 ELSE NULL END) AS "Активные Подтверждённые",
+                COUNT(CASE WHEN active_days >=5 THEN 1 ELSE NULL END) AS "Активные Всего"
+                FROM
+                full_report
+                GROUP BY
+                platform, course_name
+            ) AS usage 
+            LEFT JOIN billing_info on usage.course_id = billing_info.course_id
+            """
+        )
 
-        self.courses_report = pd.DataFrame(report)
+        # report = []
+        #
+        # for (platform, course_name), course in self.full_report.groupby(
+        #         ["platform", "course_name"]
+        # ):
+        #     billing_key = (platform, course_name)
+        #     course_price = self.billing_info.get(billing_key, 0.)
+        #     active = course.query("active_days >=5")["profile_id"].nunique()
+        #     # approved_and_active = course.query("active_days >=5 and approved_status == 'APPROVED'")["profile_id"].nunique()
+        #     approved_and_active = course.query(f"active_days >=5 and approved_status == 'APPROVED' and (special_status == 'Получено адресатом' or special_status == 'Активировали в ноябре')")["profile_id"].nunique()
+        #     report.append({
+        #         "Платформа": platform,
+        #         "Название": course_name,
+        #         # "Класс": grade,
+        #         "Всего": course["profile_id"].nunique(),
+        #         "Активные Подтверждённые": approved_and_active,
+        #         "Активные Всего": active,
+        #         "Цена за одну лицензию": course_price,
+        #         "Всего за курс": course_price * approved_and_active
+        #     })
+        #
+        # self.courses_report = pd.DataFrame(report)
 
-        self.sort_course_names(self.courses_report)
+        self.sort_course_names(self.courses_report, order=["Название", "Платформа"])
         # self.courses_report.to_csv(f"{self.__class__.__name__}_report_{timestamp}.csv", index=False)
-        self.user_report = pd.DataFrame(user_report)
-        # self.user_report.to_csv(f"{self.__class__.__name__}_user_report_{timestamp}.csv", index=False)
+        # self.user_report = pd.DataFrame(user_report)
+        # # self.user_report.to_csv(f"{self.__class__.__name__}_user_report_{timestamp}.csv", index=False)
 
     def get_report(self):
         # if self.has_new_data:
@@ -650,25 +858,30 @@ class SharedModel:
         return self.courses_report, self.user_report, self._conv_stat
 
     def get_people_for_billing(self, num_days_to_be_considered_active=5):
-        people_courses_for_billing = self.db.query(
-            f"""
-            SELECT platform, course_name, profile_id, letter_received_status
-            FROM full_report
-            WHERE approved_status = 'APPROVED' and active_days >= {num_days_to_be_considered_active}
-            """
-        )
         self.db.drop_table("billing")
-        self.db.replace_records(people_courses_for_billing.dropna(), "billing")
-        people_courses_for_billing.drop("letter_received_status", axis=1, inplace=True)
-
-        people_approved_date = self.db.query(
+        self.db.execute(
             f"""
-            SELECT profile_id, updated_at as "approved_date"
-            FROM profile_approved_status
+            CREATE TABLE billing AS
+            SELECT platform, course_name, profile_id, profile_id_uuid, special_status
+            FROM full_report
+            WHERE approved_status = 'APPROVED' 
+            AND special_status NOT NULL 
+            AND active_days >= {num_days_to_be_considered_active}
             """
         )
 
-        people_approved_date = dict(zip(people_approved_date["profile_id"], people_approved_date["approved_date"]))
+        people_courses_for_billing = self.db.query("SELECT * FROM billing") \
+            .drop("special_status", axis=1) \
+            .drop("profile_id", axis=1) \
+            .rename({"profile_id_uuid": "profile_id"}, axis=1)
+
+        # people_approved_date = self.db.query(
+        #     f"""
+        #     SELECT profile_id, updated_at as "approved_date"
+        #     FROM profile_approved_status
+        #     """
+        # )
+        # people_approved_date = dict(zip(people_approved_date["profile_id"], people_approved_date["approved_date"]))
 
         people_courses_filter = set(
             (pl, c, per) for pl, c, per in people_courses_for_billing.values
@@ -694,13 +907,17 @@ class SharedModel:
         #     """,
         #     chunksize=self.statistics_import_chunk_size
         # )
-        course_statistics = self.db.query(
+        course_statistics = self.db.query(  # can improve filtration by adding course name to the filter
             """
             SELECT 
-            DISTINCT provider, course_name, profile_id, created_at as "visit_date" 
+            DISTINCT provider, course_name, profile_id_uuid as "profile_id", created_at as "visit_date" 
             FROM 
-            target_table
-            LEFT JOIN course_information on educational_course_id = material_id
+            course_statistics
+            LEFT JOIN course_information ON course_statistics.educational_course_id = course_information.course_id
+            LEFT JOIN profile_approved_status ON course_statistics.profile_id = profile_approved_status.profile_id
+            WHERE course_statistics.profile_id IN (
+                SELECT DISTINCT profile_id FROM billing
+            ) 
             ORDER BY created_at
             """,
             chunksize=self.statistics_import_chunk_size
@@ -731,15 +948,17 @@ class SharedModel:
             for ind, date in enumerate(dates):
                 record[f"День {ind}"] = date.split(" ")[0]
 
-            record["Дата подтверждения обучающегося"] = people_approved_date[profile_id].split(" ")[0]
+            # record["Дата подтверждения обучающегося"] = people_approved_date[profile_id].split(" ")[0]
 
             records.append(record)
 
-        data = pd.DataFrame.from_records(records)
+        data = pd.DataFrame.from_records(records, columns=[
+            "Наименование образовательной цифровой площадки",
+            "Наименование ЦОК",
+            "Идентификационный номер обучающегося",
+        ]).astype("string")
         if len(data) > 0:
-            data = data.sort_values(by=[
-            "Наименование образовательной цифровой площадки", "Наименование ЦОК"
-        ])
+            self.sort_course_names(data, ["Наименование ЦОК", "Наименование образовательной цифровой площадки"])
 
         return data
 
@@ -787,9 +1006,9 @@ class Course_FoxFord(SharedModel):
         else:
             return "logout"
 
-    def validate_structure_id(self, id, parent_id, structure):
-        if id in structure:
-            assert parent_id == structure[id]["parent_id"]
+    def validate_structure_id(self, id_, parent_id, structure):
+        if id_ in structure:
+            assert parent_id == structure[id_]["parent_id"]
 
     def map_course_statistics_columns(self, data):
         data.rename({
@@ -798,6 +1017,16 @@ class Course_FoxFord(SharedModel):
             "statisticstypeid": "statistic_type_id",
             "externalid": "educational_course_id",
         }, axis=1, inplace=True)
+        def normalize(id_):
+            if pd.isna(id_):
+                return id_
+            else:
+                return "/".join(id_.split("/")[:5])
+        data.eval(
+            "educational_course_id = educational_course_id.map(@normalize)",
+            local_dict={"normalize": normalize},
+            inplace=True
+        )
         return data
 
     def load_course_statistics(self, path, date_field=None, dtype=None):
@@ -812,6 +1041,7 @@ class Course_MEO(SharedModel):
         super().__init__(*args, **kwargs)
 
     def format_course_structure_columns(self, data):
+        data.rename({"material_id": "educational_course_id"}, axis=1, inplace=True)
         return data
 
     def map_course_statistics_columns(self, data):
@@ -828,128 +1058,24 @@ class Course_MEO(SharedModel):
         for file in files:
             super().load_course_statistics(os.path.join(path, file), "Start", sep=";", dtype={"CourseId": "string"})
 
+    def resolve_structure(self, data):
+        return data
+
     def load_course_structure(self, path):
         if self.has_new_data:
             data = self.format_course_structure_columns(pd.read_csv(path, dtype={"material_id": "string"}))
-            self.db.replace_records(data, "course_information")
+            data = self.resolve_structure(data)
+            data = self.prepare_course_ids(data)
+            self.db.replace_records(
+                data[[
+                    "educational_course_id", "educational_course_id_uuid",
+                    "course_name", "provider", "course_id"]],
+                "course_information"
+            )
 
-    # def get_full_report_query_string(self):
-    #     if self.freeze_date is None:
-    #         return """
-    #         SELECT
-    #         platform, course_name, course_usage.profile_id, grade, approved_status, active_days, letter_received_status, updated_at
-    #         FROM (
-    #             SELECT
-    #             platform, course_name, profile_id,
-    #             approved_status, COUNT(DISTINCT created_at) AS "active_days", letter_received_status, updated_at
-    #             from (
-    #                 SELECT
-    #                 course_information.provider as "platform",
-    #                 course_information.course_name as "course_name",
-    #                 course_statistics.profile_id as "profile_id",
-    #                 profile_approved_status.approved_status as "approved_status",
-    #                 course_statistics.created_at as "created_at",
-    #                 educational_institution.letter_received_status as "letter_received_status",
-    #                 profile_approved_status.updated_at as "updated_at"
-    #                 from course_statistics
-    #                 INNER JOIN course_information on course_statistics.educational_course_id = course_information.material_id
-    #                 LEFT JOIN profile_approved_status on course_statistics.profile_id = profile_approved_status.profile_id
-    #                 LEFT JOIN educational_institution on profile_approved_status.educational_institution_id = educational_institution.id
-    #                 WHERE approved_status != 'NOT_APPROVED'
-    #             )
-    #             GROUP BY platform, course_name, profile_id
-    #         ) as course_usage
-    #         LEFT JOIN student_grades on course_usage.profile_id = student_grades.profile_id
-    #         """
-    #     else:
-    #         return f"""
-    #         SELECT
-    #         platform, course_name, course_usage.profile_id, grade, approved_status, active_days, letter_received_status, updated_at
-    #         FROM (
-    #             SELECT
-    #             platform, course_name, profile_id,
-    #             approved_status, COUNT(DISTINCT created_at) AS "active_days", letter_received_status, updated_at
-    #             from (
-    #                 SELECT
-    #                 course_information.provider as "platform",
-    #                 course_information.course_name as "course_name",
-    #                 course_statistics.profile_id as "profile_id",
-    #                 profile_approved_status.approved_status as "approved_status",
-    #                 course_statistics.created_at as "created_at",
-    #                 educational_institution.letter_received_status as "letter_received_status",
-    #                 profile_approved_status.updated_at as "updated_at"
-    #                 from course_statistics
-    #                 INNER JOIN course_information on course_statistics.educational_course_id = course_information.material_id
-    #                 LEFT JOIN profile_approved_status on course_statistics.profile_id = profile_approved_status.profile_id
-    #                 LEFT JOIN educational_institution on profile_approved_status.educational_institution_id = educational_institution.id
-    #                 WHERE course_statistics.created_at < '{self.freeze_date}' and approved_status != 'NOT_APPROVED'
-    #             )
-    #             GROUP BY platform, course_name, profile_id
-    #         ) as course_usage
-    #         LEFT JOIN student_grades on course_usage.profile_id = student_grades.profile_id
-    #         """
-
-    def get_full_report_query_string(self):  # min
-        if self.freeze_date is None:
-            return """
-            SELECT
-            platform, course_name, course_usage.profile_id, grade, approved_status, active_days, letter_received_status
-            FROM (
-                SELECT 
-                platform, course_name, profile_id,
-                approved_status, 
-                COUNT(CASE WHEN is_active = true THEN 1 ELSE NULL END) AS "active_days",   
-                letter_received_status
-                from (
-                    SELECT
-                    course_information.provider as "platform", 
-                    course_information.course_name as "course_name",
-                    target_table.profile_id as "profile_id", 
-                    profile_approved_status.approved_status as "approved_status", 
-                    target_table.created_at as "created_at",
-                    educational_institution.letter_received_status as "letter_received_status",
-                    profile_approved_status.updated_at as "updated_at",
-                    target_table.is_active as "is_active"
-                    from target_table 
-                    INNER JOIN course_information on target_table.educational_course_id = course_information.material_id
-                    LEFT JOIN profile_approved_status on target_table.profile_id = profile_approved_status.profile_id
-                    LEFT JOIN educational_institution on profile_approved_status.educational_institution_id = educational_institution.id
-                    WHERE approved_status != 'NOT_APPROVED'
-                ) 
-                GROUP BY platform, course_name, profile_id
-            ) as course_usage
-            LEFT JOIN student_grades on course_usage.profile_id = student_grades.profile_id
-            """
-        else:
-            return f"""
-            SELECT
-            platform, course_name, course_usage.profile_id, grade, approved_status, active_days, letter_received_status
-            FROM (
-                SELECT 
-                platform, course_name, profile_id,
-                approved_status, 
-                COUNT(CASE WHEN is_active = true THEN 1 ELSE NULL END) AS "active_days",   
-                letter_received_status
-                from (
-                    SELECT
-                    course_information.provider as "platform", 
-                    course_information.course_name as "course_name",
-                    target_table.profile_id as "profile_id", 
-                    profile_approved_status.approved_status as "approved_status", 
-                    target_table.created_at as "created_at",
-                    educational_institution.letter_received_status as "letter_received_status",
-                    profile_approved_status.updated_at as "updated_at",
-                    target_table.is_active as "is_active"
-                    from target_table 
-                    INNER JOIN course_information on target_table.educational_course_id = course_information.material_id
-                    LEFT JOIN profile_approved_status on target_table.profile_id = profile_approved_status.profile_id
-                    LEFT JOIN educational_institution on profile_approved_status.educational_institution_id = educational_institution.id
-                    WHERE target_table.created_at < '{self.freeze_date}' and approved_status != 'NOT_APPROVED'
-                ) 
-                GROUP BY platform, course_name, profile_id
-            ) as course_usage
-            LEFT JOIN student_grades on course_usage.profile_id = student_grades.profile_id
-            """
+    # def get_filtration_rules(self):
+    #     filtration_rules = "WHERE approved_status != 'NOT_APPROVED'"
+    #     return filtration_rules
 
     # def prepare_for_report(self):
     #     self.full_report = self.db.query(
@@ -1014,21 +1140,11 @@ class ReportWriter:
         self.sheet_data = []
         self.sheet_options = []
 
-        self.special_files = set([
-            "student_16.11.csv",
-            "educational_course_statistic_16.11.csv",
-            "educational_course_type_16.11.csv",
-            "educational_courses_16.11.csv",
-            "educational_courses_only_courses_16.11.csv",
-            "external_system_16.11.csv",
-            "last_export",
-            "profile_educational_institution_16.11.csv",
-            "profile_role_16.11.csv",
-            "role_16.11.csv",
-            "school_students.csv",
-            "statistic_type_16.11.csv",
-            "educational_institution_16.11.csv"
-        ])
+        self.special_files = {"student_16.11.bz2", "educational_course_statistic_16.11.bz2",
+                              "educational_course_type_16.11.bz2", "educational_courses_16.11.bz2",
+                              "educational_courses_only_courses_16.11.bz2", "external_system_16.11.bz2", "last_export",
+                              "profile_educational_institution_16.11.bz2", "profile_role_16.11.bz2", "role_16.11.bz2",
+                              "school_students.bz2", "statistic_type_16.11.bz2", "educational_institution_16.11.bz2"}
 
     def create_definitions(self, tab_names):
         definitions = ""
@@ -1071,6 +1187,8 @@ class ReportWriter:
         format = workbook.add_format({'text_wrap': True})
         for ind, col in enumerate(data.columns):
             def get_max_len(data):
+                if len(data) == 0:
+                    return 15
                 return max(data.astype(str).map(len))
             col_width = min(
                 max(get_max_len(data[col]), len(col)),
@@ -1135,16 +1253,16 @@ class ReportWriter:
         max_len, max_width = 1048576, 16384
         for file_path in self.queries_path.iterdir():
             filename = file_path.name
-            if not filename.endswith(".csv") or filename.startswith("___") or filename in self.special_files:
+            if not filename.endswith(".bz2") or filename.startswith("___") or filename in self.special_files:
                 continue
 
-            data = pd.read_csv(file_path)
+            data = pd.read_pickle(file_path, compression=None)
             if data.shape[0] >= max_len or data.shape[1] > max_width:
                 logging.info(f"Skipping {filename}")
                 continue
             data = data.dropna(how="all")
 
-            self.add_sheet(self.normalize_worksheet_name(filename.strip(".csv")), data)
+            self.add_sheet(self.normalize_worksheet_name(filename.strip(".bz2")), data)
 
     def get_report_name(self):
         return f"report_{self.last_export}"
@@ -1153,7 +1271,7 @@ class ReportWriter:
         export_file_name = self.get_report_name()
 
         self.write_xlsx(self.sheet_names, self.sheet_data, self.sheet_options, export_file_name)
-        self.write_html(self.sheet_names, self.sheet_data, self.sheet_options, export_file_name)
+        # self.write_html(self.sheet_names, self.sheet_data, self.sheet_options, export_file_name)
         self.write_index_html(export_file_name)
 
 
@@ -1354,13 +1472,13 @@ def get_reports(provider_data, region_info_path) -> Optional[Reports]:
 
 def process_statistics(
         *, billing, student_grades, statistics_type, external_system, profile_educational_institution,
-        course_structure, course_structure_foxford, course_structure_meo, course_types, course_statistics, course_statistics_foxford,
-        course_statistics_uchi, course_statistics_meo, last_export, html_path, resources_path, region_info_path,
-        freeze_date, educational_institution_path, minute_activity
+        course_structure, course_structure_foxford, course_structure_meo, course_types, course_statistics,
+        course_statistics_foxford, course_statistics_uchi, course_statistics_meo, last_export, html_path,
+        resources_path, region_info_path, freeze_date, educational_institution_path, minute_activity
 ):
     last_export = get_last_export(last_export)
 
-    logging.info("Running scheduled processing")
+    logging.info("Processing")
 
     provider_data = [
         Course_1C_ND(
@@ -1370,27 +1488,27 @@ def process_statistics(
             last_export=last_export, resources_path=resources_path, freeze_date=freeze_date,
             educational_institution=educational_institution_path, minute_activity=minute_activity
         ),
-        # Course_FoxFord(
-        #     billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
-        #     external_system=external_system, profile_educational_institution=profile_educational_institution,
-        #     course_structure=course_structure_foxford, course_types=course_types,
-        #     course_statistics=course_statistics_foxford, last_export=last_export, resources_path=resources_path,
-        #     freeze_date=freeze_date, educational_institution=educational_institution_path, minute_activity=minute_activity
-        # ),
-        # Course_MEO(
-        #     billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
-        #     external_system=external_system, profile_educational_institution=profile_educational_institution,
-        #     course_structure=course_structure_meo, course_types=course_types,
-        #     course_statistics=course_statistics_meo, last_export=last_export, resources_path=resources_path,
-        #     freeze_date=freeze_date, educational_institution=educational_institution_path, minute_activity=minute_activity
-        # ),
-        # Course_Uchi(
-        #     billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
-        #     external_system=external_system, profile_educational_institution=profile_educational_institution,
-        #     course_structure=course_structure, course_types=course_types, course_statistics=course_statistics_uchi,
-        #     last_export=last_export, resources_path=resources_path, freeze_date=freeze_date,
-        #     educational_institution=educational_institution_path, minute_activity=minute_activity
-        # )
+        Course_FoxFord(
+            billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
+            external_system=external_system, profile_educational_institution=profile_educational_institution,
+            course_structure=course_structure_foxford, course_types=course_types,
+            course_statistics=course_statistics_foxford, last_export=last_export, resources_path=resources_path,
+            freeze_date=freeze_date, educational_institution=educational_institution_path, minute_activity=minute_activity
+        ),
+        Course_MEO(
+            billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
+            external_system=external_system, profile_educational_institution=profile_educational_institution,
+            course_structure=course_structure_meo, course_types=course_types,
+            course_statistics=course_statistics_meo, last_export=last_export, resources_path=resources_path,
+            freeze_date=freeze_date, educational_institution=educational_institution_path, minute_activity=minute_activity
+        ),
+        Course_Uchi(
+            billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
+            external_system=external_system, profile_educational_institution=profile_educational_institution,
+            course_structure=course_structure, course_types=course_types, course_statistics=course_statistics_uchi,
+            last_export=last_export, resources_path=resources_path, freeze_date=freeze_date,
+            educational_institution=educational_institution_path, minute_activity=minute_activity
+        )
     ]
 
     reports = get_reports(provider_data, region_info_path)
