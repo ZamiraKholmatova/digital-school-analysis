@@ -18,6 +18,8 @@ from math import isnan
 from natsort import index_natsorted
 from tqdm import tqdm
 
+from src.python.merge_activity_informaiton import merge_activity_and_regions
+
 Reports = namedtuple(
     "Reports",
     [
@@ -1271,7 +1273,6 @@ def get_reports(provider_data, region_info_path) -> Optional[Reports]:
         convergence_report = pd.concat(convergence_reports, axis=1)
         billing_report = pd.concat(billing_reports, axis=0)
         convergence_report = convergence_report.reset_index().rename({"index": "Активных дней"}, axis=1)
-        from merge_activity_informaiton import merge_activity_and_regions
         schools_active = merge_activity_and_regions([p.db for p in provider_data], region_info_path)
         regions_active = schools_active.groupby('Регион').sum().reset_index()
 
