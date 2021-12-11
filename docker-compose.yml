@@ -1,0 +1,15 @@
+# Use postgres/example user/password credentials
+version: '3.1'
+
+services:
+  db:
+    image: postgres
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: example
+      PGDATA: /project/resources_postgres
+      POSTGRES_HOST_AUTH_METHOD: md5
+    ports:
+      - 6001:5432
+    volumes:
+      - ./:/project
