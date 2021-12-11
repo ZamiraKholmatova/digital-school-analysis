@@ -38,12 +38,12 @@ class SQLTable:
         self.conn = sqlite3.connect(filename)
         self.path = filename
 
-    def replace_records(self, table, table_name):
-        table.to_sql(table_name, con=self.conn, if_exists='replace', index=False)
+    def replace_records(self, table, table_name, **kwargs):
+        table.to_sql(table_name, con=self.conn, if_exists='replace', index=False, **kwargs)
         self.create_index_for_table(table, table_name)
 
-    def add_records(self, table, table_name):
-        table.to_sql(table_name, con=self.conn, if_exists='append', index=False)
+    def add_records(self, table, table_name, **kwargs):
+        table.to_sql(table_name, con=self.conn, if_exists='append', index=False, **kwargs)
         self.create_index_for_table(table, table_name)
 
     def create_index_for_table(self, table, table_name):
@@ -74,7 +74,7 @@ class SQLTable:
 
 class SharedModel:
     def __init__(
-            self, *, billing_info, student_grades, statistics_type, external_system,
+            self, *, billing_info, profiles, student_grades, statistics_type, external_system,
             profile_educational_institution, course_structure, course_types, course_statistics, last_export,
             resources_path, freeze_date=None, educational_institution=None, minute_activity=False
     ):
@@ -89,15 +89,16 @@ class SharedModel:
 
         self.set_new_data_flag(last_export)
 
-        # self.load_grade_description(grade_description)
+        # # self.load_grade_description(grade_description)
+        self.load_profiles(profiles)
         self.load_student_grades(student_grades)
-        # self.load_statistics_type(statistics_type)
+        # # self.load_statistics_type(statistics_type)
         self.load_external_system(external_system)
         self.load_educational_institution(educational_institution)
         self.load_course_types(course_types)
         self.load_profile_approved_status(profile_educational_institution)
-        self.load_course_structure(course_structure)
         self.load_billing_info(billing_info)
+        self.load_course_structure(course_structure)
         self.load_course_statistics(course_statistics)
         if self.minute_activity:
             self.compute_active_days()
@@ -191,24 +192,67 @@ class SharedModel:
 
         return data
 
+    def normalize_is_deleted_field(self, table):
+        table.eval(
+            "is_deleted = is_deleted.map(@to_false)",
+            local_dict={"to_false": lambda x: x == "t"}, inplace=True
+        )
+
+    def load_profiles(self, path):
+        if self.has_new_data:
+            data = pd.read_pickle(path, compression=None)
+            self.convert_ids_to_int(data, ["profile_id"])
+            self.normalize_is_deleted_field(data)
+
+            self.db.replace_records(
+                data, "profiles",
+                dtype={
+                    "profile_id": "INT PRIMARY KEY",
+                    "profile_id_uuid": "TEXT UNIQUE NOT NULL",
+                    "is_deleted": "INT NOT NULL"
+                }
+            )
+
+            self.save_mappings()
+
     def load_billing_info(self, path):
         data = pd.read_csv(path, dtype={"price": "Float32"}).rename({"short_name": "provider"}, axis=1)
         # data.dropna(subset=["price"], inplace=True)
-        data.eval("price = price.fillna(0.)", inplace=True)
+        # data.eval("price = price.fillna(0.)", inplace=True)
         data.drop_duplicates(subset=["provider", "course_name"], inplace=True)
         data.eval("provider_course_name = provider + course_name", inplace=True)
         self.convert_ids_to_int(data, ["provider_course_name"])
         data.drop("provider_course_name_uuid", axis=1, inplace=True)
         data.rename({"provider_course_name": "course_id"}, axis=1, inplace=True)
-        self.db.replace_records(data[["provider", "course_name", "course_id", "price"]], "billing_info")
+        self.db.replace_records(
+            data[["provider", "course_name", "course_id", "price"]],
+            "billing_info",
+            dtype={
+                "course_id": "INT PRIMARY KEY",
+                "provider": "TEXT NOT NULL",
+                "course_name": "TEXT NOT NULL",
+                "price": "REAL NOT NULL"
+            }
+        )
+
+        self.save_mappings()
 
     def load_student_grades(self, path):
         if self.has_new_data:
             # data = pd.read_csv(path, dtype={"grade": "Int32"}).rename({"id": "profile_id"}, axis=1)
             data = pd.read_pickle(path, compression=None).rename({"id": "profile_id"}, axis=1)
-            self.check_for_nas(data, "grade", path)
-            self.convert_ids_to_int(data, ["profile_id"])
-            self.db.replace_records(data[["profile_id", "profile_id_uuid", "grade"]], "student_grades")
+            self.convert_ids_to_int(data, ["profile_id"], add_new=False)
+            for field in ["grade", "profile_id"]:
+                self.check_for_nas(data, field, path + f"_{self.__class__.__name__}")
+            self.normalize_is_deleted_field(data)
+            self.db.replace_records(
+                data[["profile_id", "profile_id_uuid", "grade", "is_deleted"]],
+                "student_grades",
+                dtype={
+                    "profile_id": "INT PRIMARY KEY",
+                    "grade": "INT", "is_deleted": "INT NOT NULL"
+                }
+            )
 
     def load_external_system(self, path):
         # data = pd.read_csv(path)
@@ -221,7 +265,7 @@ class SharedModel:
             letters_status = pd.read_pickle(cached, compression=None)
         else:
             letters_status = pd.read_excel(
-                path, dtype={"ИНН": "string"}
+                path, dtype={"ИНН": "string"}, engine="openpyxl"
             )
             letters_status.to_pickle(cached, compression=None)
         return letters_status[["ИНН", "Статус письма"]]
@@ -232,7 +276,7 @@ class SharedModel:
             november_schools = pd.read_pickle(cached, compression=None)
         else:
             november_schools = pd.read_excel(
-                path, dtype={"ИНН": "string"}
+                path, dtype={"ИНН": "string"}, engine="openpyxl"
             )
             november_schools.to_pickle(cached, compression=None)
         return november_schools[["ИНН"]]
@@ -290,20 +334,41 @@ class SharedModel:
 
             self.db.replace_records(
                 merged[["educational_institution_id", "educational_institution_id_uuid", "special_status"]],
-                "educational_institution"
+                "educational_institution",
+                dtype={
+                    "educational_institution_id": "INT PRIMARY KEY",
+                    "educational_institution_id_uuid": "TEXT UNIQUE NOT NULL",
+                    "special_status": "TEXT"
+                }
             )
+
+            self.save_mappings()
 
     def load_profile_approved_status(self, path):
         if self.has_new_data:
             # data = pd.read_csv(path)
             data = pd.read_pickle(path, compression=None)
-            self.convert_ids_to_int(data, ["profile_id", "educational_institution_id"])
+            self.convert_ids_to_int(data, ["profile_id", "educational_institution_id"], add_new=False)
+            for field in ["profile_id", "educational_institution_id"]:
+                self.check_for_nas(data, field, path + f"_{self.__class__.__name__}")
+            self.normalize_is_deleted_field(data)
 
             self.db.replace_records(
                 data[[
                     "profile_id", "profile_id_uuid", "approved_status", "role",
-                    "educational_institution_id", "educational_institution_id_uuid"
-                ]], "profile_approved_status")  # updated_at
+                    "educational_institution_id", "educational_institution_id_uuid",
+                    "is_deleted"
+                ]], "profile_approved_status",
+                dtype={
+                    "profile_id": "INT PRIMARY KEY",
+                    "profile_id_uuid": "TEXT UNIQUE NOT NULL",
+                    "approved_status": "TEXT",
+                    "role": "TEXT",
+                    "educational_institution_id": "INT NOT NULL",
+                    "educational_institution_id_uuid": "TEXT NOT NULL",
+                    "is_deleted": "INT NOT NULL"
+                }
+            )  # updated_at
 
     def format_course_structure_columns(self, data):
         # fields = ["id", "deleted", "course_type_id", "parent_id", "external_link", "course_name", "external_id",
@@ -323,31 +388,49 @@ class SharedModel:
 
         mapping = []
         for id_ in structure:
-            course_name, provider = self.find_subject(id_)
+            course_name, provider, is_deleted = self.find_subject(id_)
             mapping.append({
                 "educational_course_id": id_,
                 "course_name": course_name,
-                "provider": provider
+                "provider": provider,
+                "is_deleted": is_deleted
             })
         return pd.DataFrame(mapping)
 
-    def prepare_course_ids(self, data):
+    def prepare_course_ids(self, data, path):
         data.eval("provider_course_name = provider + course_name", inplace=True)
-        self.convert_ids_to_int(data, ["educational_course_id", "provider_course_name"])
-        data.eval("course_id = provider_course_name", inplace=True)
-        self.educational_course_id2course_id = dict(zip(data["educational_course_id"], data["course_id"]))
+        self.convert_ids_to_int(data, ["educational_course_id"])
+        self.convert_ids_to_int(data, ["provider_course_name"], add_new=False)
+        self.check_for_nas(data, "provider_course_name", path + f"_{self.__class__.__name__}")
+        data.rename({"provider_course_name": "course_id"}, axis=1, inplace=True)
+        # self.educational_course_id2course_id = dict(zip(data["educational_course_id"], data["course_id"]))
+        self.mappings["educational_course_id2course_id"] = dict(zip(data["educational_course_id"], data["course_id"]))
+
+        self.save_mappings()
         return data
 
     def load_course_structure(self, path):
         if self.has_new_data:
             data = self.format_course_structure_columns(pd.read_csv(path))
+            if "is_deleted" in data.columns:
+                self.normalize_is_deleted_field(data)
+            else:
+                data["is_deleted"] = False
             data = self.resolve_structure(data)
-            data = self.prepare_course_ids(data)
+            data = self.prepare_course_ids(data, path)
             self.db.replace_records(
                 data[[
                     "educational_course_id", "educational_course_id_uuid",
-                    "course_name", "provider", "course_id"]],
-                "course_information"
+                    "course_name", "provider", "course_id", "is_deleted"]],
+                "course_information",
+                dtype={
+                    "educational_course_id": "INT PRIMARY KEY",
+                    "educational_course_id_uuid": "TEXT UNIQUE NOT NULL",
+                    "course_name": "TEXT NOT NULL",
+                    "provider": "TEXT NOT NULL",
+                    "course_id": "INT NOT NULL",
+                    "is_deleted": "INT NOT NULL"
+                }
             )
 
     def load_course_types(self, path):
@@ -386,7 +469,7 @@ class SharedModel:
             course_type = self.get_course_type(course["course_type_id"])
             provider = self.external_system[course["system_code"]]
             self.validate_course(course_name, course_type, provider)
-            return course_name, provider
+            return course_name, provider, course["is_deleted"]
         return self.find_subject(parent_id)
 
     def map_course_statistics_columns(self, data):
@@ -408,7 +491,7 @@ class SharedModel:
         self.convert_ids_to_int(chunk, ["profile_id", "educational_course_id"], add_new=False)
         chunk.eval( # this lookup can fail only if convert_ids_to_int fails
             "educational_course_id = educational_course_id.map(@resolve_id)",
-            local_dict={"resolve_id": lambda id_: self.educational_course_id2course_id.get(id_, pd.NA)},
+            local_dict={"resolve_id": lambda id_: self.mappings["educational_course_id2course_id"].get(id_, pd.NA)},
             inplace=True
         )
         # chunk["educational_course_id"] = chunk["educational_course_id"].apply(
@@ -425,6 +508,9 @@ class SharedModel:
     def prepare_statistics_table(self):
         pass
 
+    def filter_statistics_files(self, files):
+        return filter(lambda filename: filename.endswith(".csv") and not filename.startswith("."), files)
+
     def load_course_statistics(self, path, date_field="created_at", **kwargs):
         self.prepare_statistics_table()
         target_table = "course_statistics" if self.minute_activity is False else "course_statistics_pre"
@@ -435,12 +521,20 @@ class SharedModel:
                     path, chunksize=self.statistics_import_chunk_size, parse_dates=[date_field], **kwargs
             )):
                 self.db.add_records(
-                    self.preprocess_chunk(chunk, path, error_buffer, drop_duplicates=not self.minute_activity), target_table
+                    self.preprocess_chunk(chunk, path, error_buffer, drop_duplicates=not self.minute_activity),
+                    target_table,
+                    # dtype={
+                    #     "profile_id": "INT NOT NULL",
+                    #     "educational_course_id": "INT NOT NULL",
+                    #     "created_at": "TIMESTAMP NOT NULL",
+                    #     "created_at_original": "TIMESTAMP NOT NULL"
+                    # }
                 )
             for error_file, content in error_buffer.items():
                 content.to_csv(error_file, index=False, sep="\t")
             self.processed_files.append(filename)
             self.has_new_data = True
+            self.save_state()
 
     def entry_valid(self, profile_id, statistic_type_id, educational_course_id, created_at):
         profile_id = profile_id  # entry["profile_id"]
@@ -489,9 +583,9 @@ class SharedModel:
 
     def get_active_days_count_rule(self):
         if self.minute_activity:
-            active_days_request = 'COUNT(CASE WHEN is_active = true THEN 1 ELSE NULL END)'
+            active_days_request = 'CAST(COUNT(CASE WHEN is_active = true THEN 1 ELSE NULL END) AS INTEGER)'
         else:
-            active_days_request = 'COUNT(DISTINCT created_at)'
+            active_days_request = 'CAST(COUNT(DISTINCT created_at) AS INTEGER)'
         return active_days_request
 
     def get_extra_column_names(self):
@@ -509,8 +603,8 @@ class SharedModel:
             chunks = self.db.query(
                 """
                 SELECT 
-                profile_id, educational_course_id, created_at, 
-                min(created_at_original) as day_start, max(created_at_original) as day_end  
+                profile_id, educational_course_id, CAST(created_at AS TIMESTAMP), 
+                CAST(min(created_at_original) AS TIMESTAMP) as day_start, CAST(max(created_at_original) AS TIMESTAMP) as day_end  
                 FROM 
                 course_statistics_pre
                 GROUP BY profile_id, educational_course_id, created_at
@@ -521,7 +615,17 @@ class SharedModel:
                 chunk["is_active"] = (
                         pd.to_datetime(chunk["day_end"]) - pd.to_datetime(chunk["day_start"])
                 ).map(lambda x: x.seconds / seconds_in_minute > minimum_active_minutes)
-                self.db.add_records(chunk, "course_statistics")
+                self.db.add_records(
+                    chunk, "course_statistics",
+                    dtype={
+                        "profile_id": "INT NOT NULL",
+                        "educational_course_id": "INT NOT NULL",
+                        "created_at": "TIMESTAMP NOT NULL",
+                        "day_start": "TIMESTAMP NOT NULL",
+                        "day_end": "TIMESTAMP NOT NULL",
+                        "is_active": "INT NOT NULL",
+                    }
+                )
 
     def prepare_for_report(self):
 
@@ -611,11 +715,11 @@ class SharedModel:
                 CREATE TABLE active_data AS
                 SELECT
                 platform as "Активных дней",
-                COUNT(DISTINCT CASE WHEN active_days >= 2 THEN profile_id ELSE NULL END) as "2 дня и более",
-                COUNT(DISTINCT CASE WHEN active_days >= 3 THEN profile_id ELSE NULL END) as "3 дня и более",
-                COUNT(DISTINCT CASE WHEN active_days >= 4 THEN profile_id ELSE NULL END) as "4 дня и более",
-                COUNT(DISTINCT CASE WHEN active_days >= 5 THEN profile_id ELSE NULL END) as "5 дней и более",
-                COUNT(profile_id) as "Всего пользоателей"
+                CAST(COUNT(DISTINCT CASE WHEN active_days >= 2 THEN profile_id ELSE NULL END) AS INTEGER) as "2 дня и более",
+                CAST(COUNT(DISTINCT CASE WHEN active_days >= 3 THEN profile_id ELSE NULL END) AS INTEGER) as "3 дня и более",
+                CAST(COUNT(DISTINCT CASE WHEN active_days >= 4 THEN profile_id ELSE NULL END) AS INTEGER) as "4 дня и более",
+                CAST(COUNT(DISTINCT CASE WHEN active_days >= 5 THEN profile_id ELSE NULL END) AS INTEGER) as "5 дней и более",
+                CAST(COUNT(profile_id) AS INTEGER) as "Всего пользоателей"
                 FROM (
                     SELECT
                     platform, profile_id, max(active_days) as "active_days"
@@ -648,16 +752,16 @@ class SharedModel:
                 CREATE TABLE user_report AS
                 SELECT
                 platform as "Платформа",
-                COUNT(DISTINCT profile_id) as "Всего пользователей",
-                COUNT(DISTINCT CASE WHEN active_days >= 5 THEN profile_id ELSE NULL END) as "Активных пользователей",
-                COUNT(DISTINCT CASE WHEN approved_status = 'APPROVED' AND 
+                CAST(COUNT(DISTINCT profile_id) AS INTEGER) as "Всего пользователей",
+                CAST(COUNT(DISTINCT CASE WHEN active_days >= 5 THEN profile_id ELSE NULL END) AS INTEGER) as "Активных пользователей",
+                CAST(COUNT(DISTINCT CASE WHEN approved_status = 'APPROVED' AND 
                             (
                                     special_status = 'Получено адресатом' OR special_status == 'Активировали в ноябре'
-                            ) THEN profile_id ELSE NULL END) as "Подтверждённых пользователей использующих сервис",
-                COUNT(DISTINCT CASE WHEN approved_status = 'APPROVED' AND active_days >= 5 AND 
+                            ) THEN profile_id ELSE NULL END) AS INTEGER) as "Подтверждённых пользователей использующих сервис",
+                CAST(COUNT(DISTINCT CASE WHEN approved_status = 'APPROVED' AND active_days >= 5 AND 
                             (
                                     special_status = 'Получено адресатом' OR special_status == 'Активировали в ноябре'
-                            ) THEN profile_id ELSE NULL END) as "Активных и подтверждённых пользователей"
+                            ) THEN profile_id ELSE NULL END) AS INTEGER) as "Активных и подтверждённых пользователей"
                 FROM
                 full_report
                 GROUP BY
@@ -683,12 +787,12 @@ class SharedModel:
                     course_id,
                     platform as "Платформа",
                     course_name as "Название",
-                    COUNT(DISTINCT profile_id) as "Всего",
-                    COUNT(CASE WHEN active_days >=5 AND approved_status == 'APPROVED' AND 
+                    CAST(COUNT(DISTINCT profile_id) AS INTEGER) as "Всего",
+                    CAST(COUNT(CASE WHEN active_days >=5 AND approved_status == 'APPROVED' AND 
                             (
                                 special_status == 'Получено адресатом' OR special_status == 'Активировали в ноябре'
-                            ) THEN 1 ELSE NULL END) AS "Активные Подтверждённые",
-                    COUNT(CASE WHEN active_days >=5 THEN 1 ELSE NULL END) AS "Активные Всего"
+                            ) THEN 1 ELSE NULL END) AS INTEGER) AS "Активные Подтверждённые",
+                    CAST(COUNT(CASE WHEN active_days >=5 THEN 1 ELSE NULL END) AS INTEGER) AS "Активные Всего"
                     FROM
                     full_report
                     GROUP BY
@@ -787,7 +891,12 @@ class SharedModel:
             if len(data) > 0:
                 self.sort_course_names(data, ["Наименование ЦОК", "Наименование образовательной цифровой площадки"])
 
-            self.db.add_records(data, "people_billing_report")
+            self.db.add_records(
+                data, "people_billing_report",
+                dtype={
+
+                }
+            )
 
         data = self.db.query("SELECT * FROM people_billing_report")
 
@@ -802,6 +911,9 @@ class Course_1C_ND(SharedModel):
         if self.has_new_data:
             self.db.drop_table("course_statistics")
             self.processed_files = []
+
+    def format_course_structure_columns(self, data):
+        return data.rename({"deleted": "is_deleted"}, axis=1)
 
 
 class Course_FoxFord(SharedModel):
@@ -862,7 +974,7 @@ class Course_FoxFord(SharedModel):
 
     def load_course_statistics(self, path, date_field=None, dtype=None):
         files = sorted(os.listdir(path))
-        files = filter(lambda filename: filename.endswith(".csv"), files)
+        files = self.filter_statistics_files(files)
         for file in files:
             super().load_course_statistics(os.path.join(path, file), "createdat")
 
@@ -885,7 +997,7 @@ class Course_MEO(SharedModel):
 
     def load_course_statistics(self, path, date_field=None, dtype=None):
         files = sorted(os.listdir(path))
-        files = filter(lambda filename: filename.endswith(".csv"), files)
+        files = self.filter_statistics_files(files)
         for file in files:
             super().load_course_statistics(os.path.join(path, file), "Start", sep=";", dtype={"CourseId": "string"})
 
@@ -895,13 +1007,25 @@ class Course_MEO(SharedModel):
     def load_course_structure(self, path):
         if self.has_new_data:
             data = self.format_course_structure_columns(pd.read_csv(path, dtype={"material_id": "string"}))
+            if "is_deleted" in data.columns:
+                self.normalize_is_deleted_field(data)
+            else:
+                data["is_deleted"] = False
             data = self.resolve_structure(data)
-            data = self.prepare_course_ids(data)
+            data = self.prepare_course_ids(data, path)
             self.db.replace_records(
                 data[[
                     "educational_course_id", "educational_course_id_uuid",
-                    "course_name", "provider", "course_id"]],
-                "course_information"
+                    "course_name", "provider", "course_id", "is_deleted"]],
+                "course_information",
+                dtype={
+                    "educational_course_id": "INT PRIMARY KEY",
+                    "educational_course_id_uuid": "TEXT UNIQUE NOT NULL",
+                    "course_name": "TEXT NOT NULL",
+                    "provider": "TEXT NOT NULL",
+                    "course_id": "INT NOT NULL",
+                    "is_deleted": "INT NOT NULL"
+                }
             )
 
 
@@ -943,9 +1067,9 @@ class Course_Uchi(SharedModel):
 
     def load_course_statistics(self, path, date_field=None, dtype=None):
         files = sorted(os.listdir(path))
-        files = filter(lambda filename: filename.endswith(".csv"), files)
+        files = self.filter_statistics_files(files)
         for file in files:
-            super().load_course_statistics(os.path.join(path, file), "createdAt", dtype={"externalId": "string"})
+            super().load_course_statistics(os.path.join(path, file), "createdAt", dtype={"externalId": "string"})  # , sep="\t")
 
 
 class ReportWriter:
@@ -1289,7 +1413,7 @@ def get_reports(provider_data, region_info_path) -> Optional[Reports]:
 
 
 def process_statistics(
-        *, billing, student_grades, statistics_type, external_system, profile_educational_institution,
+        *, billing, profiles_path, student_grades, statistics_type, external_system, profile_educational_institution,
         course_structure, course_structure_foxford, course_structure_meo, course_types, course_statistics,
         course_statistics_foxford, course_statistics_uchi, course_statistics_meo, last_export, html_path,
         resources_path, region_info_path, freeze_date, educational_institution_path, minute_activity
@@ -1304,28 +1428,32 @@ def process_statistics(
             external_system=external_system, profile_educational_institution=profile_educational_institution,
             course_structure=course_structure, course_types=course_types, course_statistics=course_statistics,
             last_export=last_export, resources_path=resources_path, freeze_date=freeze_date,
-            educational_institution=educational_institution_path, minute_activity=minute_activity
+            educational_institution=educational_institution_path, minute_activity=minute_activity,
+            profiles=profiles_path
         ),
         Course_FoxFord(
             billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
             external_system=external_system, profile_educational_institution=profile_educational_institution,
             course_structure=course_structure_foxford, course_types=course_types,
             course_statistics=course_statistics_foxford, last_export=last_export, resources_path=resources_path,
-            freeze_date=freeze_date, educational_institution=educational_institution_path, minute_activity=minute_activity
+            freeze_date=freeze_date, educational_institution=educational_institution_path, minute_activity=minute_activity,
+            profiles = profiles_path
         ),
         Course_MEO(
             billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
             external_system=external_system, profile_educational_institution=profile_educational_institution,
             course_structure=course_structure_meo, course_types=course_types,
             course_statistics=course_statistics_meo, last_export=last_export, resources_path=resources_path,
-            freeze_date=freeze_date, educational_institution=educational_institution_path, minute_activity=minute_activity
+            freeze_date=freeze_date, educational_institution=educational_institution_path, minute_activity=minute_activity,
+            profiles=profiles_path
         ),
         Course_Uchi(
             billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
             external_system=external_system, profile_educational_institution=profile_educational_institution,
             course_structure=course_structure, course_types=course_types, course_statistics=course_statistics_uchi,
             last_export=last_export, resources_path=resources_path, freeze_date=freeze_date,
-            educational_institution=educational_institution_path, minute_activity=minute_activity
+            educational_institution=educational_institution_path, minute_activity=minute_activity,
+            profiles=profiles_path
         )
     ]
 
@@ -1399,6 +1527,7 @@ if __name__ == "__main__":
     parser.add_argument("--course_statistics_meo", default=None)
     parser.add_argument("--region_info_path", default=None)
     parser.add_argument("--educational_institution_path", default=None)
+    parser.add_argument("--profiles_path", default=None)
     parser.add_argument("--last_export", default=None)
     parser.add_argument("--html_path", default=None)
     parser.add_argument("--resources_path", default=None)
