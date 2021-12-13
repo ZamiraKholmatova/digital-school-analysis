@@ -49,9 +49,9 @@ class SQLTable:
     def create_index_for_table(self, table, table_name):
         self.execute(
             f"""
-                    CREATE INDEX IF NOT EXISTS idx_{table_name} 
-                    ON {table_name}({','.join(repr(col) for col in table.columns)})
-                    """
+            CREATE INDEX IF NOT EXISTS idx_{table_name} 
+            ON {table_name}({','.join(repr(col) for col in table.columns)})
+            """
         )
 
     def query(self, query_string, **kwargs):
@@ -207,10 +207,17 @@ class SharedModel:
             self.db.replace_records(
                 data, "profiles",
                 dtype={
-                    "profile_id": "INT PRIMARY KEY",
-                    "profile_id_uuid": "TEXT UNIQUE NOT NULL",
-                    "is_deleted": "INT NOT NULL"
+                    "profile_id": "INT",
+                    "profile_id_uuid": "TEXT",
+                    "is_deleted": "INT"
                 }
+            )
+
+            self.db.execute(
+                """
+                ALTER TABLE `profiles` ADD PRIMARY KEY (`profile_id`);
+                ALTER TABLE table_name ADD CONSTRAINT UNIQUE(profile_id_uuid);
+                """
             )
 
             self.save_mappings()

@@ -18,10 +18,11 @@ COPY role(id, role)  TO '/tmp/export_34625/role_16.11.csv' DELIMITER ',' CSV HEA
 COPY (
     SELECT
     profile_id, educational_institution_id, approved_status, role, profile_educational_institution.updated_at,
-    profile_educational_confirmation_log.updated_at as "approval_date", profile_educational_institution.is_deleted
+    max(profile_educational_confirmation_log.updated_at) as "approval_date", profile_educational_institution.is_deleted
     FROM
     profile_educational_institution
     LEFT JOIN profile_educational_confirmation_log on (profile_educational_institution.id = profile_educational_confirmation_log.profile_educational_institution_id)
+    GROUP BY profile_id, profile_educational_institution.educational_institution_id, approved_status, role, profile_educational_institution.updated_at, profile_educational_institution.is_deleted
 ) TO '/tmp/export_34625/profile_educational_institution_16.11.csv' DELIMITER ',' CSV HEADER;
 
 -- educational_institution contains school address and inn
