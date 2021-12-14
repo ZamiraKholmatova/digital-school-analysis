@@ -20,6 +20,10 @@ from tqdm import tqdm
 
 from src.python.merge_activity_informaiton import merge_activity_and_regions
 
+from sqlalchemy.types import Boolean, Date, String, Integer, REAL
+from sqlalchemy import create_engine
+from sqlalchemy.dialects.postgresql import UUID
+
 Reports = namedtuple(
     "Reports",
     [
@@ -34,42 +38,58 @@ Reports = namedtuple(
 
 
 class SQLTable:
-    def __init__(self, filename):
-        self.conn = sqlite3.connect(filename)
-        self.path = filename
+    def __init__(self, db_name):
+        self.engine = create_engine(f"postgresql://postgres:example@localhost:6001/{db_name}")
+        self.conn = self.engine.raw_connection()
+        self.curr = self.conn.cursor()
 
-    def replace_records(self, table, table_name, **kwargs):
-        table.to_sql(table_name, con=self.conn, if_exists='replace', index=False, **kwargs)
-        self.create_index_for_table(table, table_name)
+    def replace_records(self, table, table_name, create_indexes=True, **kwargs):
+        table.to_sql(table_name, con=self.engine, if_exists='replace', index=False, **kwargs)
+        if create_indexes:
+            self.create_index_for_table(table, table_name)
 
-    def add_records(self, table, table_name, **kwargs):
-        table.to_sql(table_name, con=self.conn, if_exists='append', index=False, **kwargs)
-        self.create_index_for_table(table, table_name)
+    def add_records(self, table, table_name, create_indexes=True, **kwargs):
+        table.to_sql(table_name, con=self.engine, if_exists='append', index=False, **kwargs)
+        if create_indexes:
+            self.create_index_for_table(table, table_name)
 
     def create_index_for_table(self, table, table_name):
         self.execute(
             f"""
-            CREATE INDEX IF NOT EXISTS idx_{table_name} 
-            ON {table_name}({','.join(repr(col) for col in table.columns)})
+            CREATE INDEX IF NOT EXISTS idx_{table_name} ON {table_name}({','.join(table.columns)})
             """
         )
 
     def query(self, query_string, **kwargs):
-        return pd.read_sql(query_string, self.conn, **kwargs)
+        return pd.read_sql(query_string, self.engine, **kwargs)
 
     def execute(self, query_string):
-        self.conn.execute(query_string)
+        self.curr.execute(query_string)
         self.conn.commit()
 
     def drop_table(self, table_name):
-        self.conn.execute(f"DROP TABLE IF EXISTS {table_name}")
-        self.conn.execute(f"DROP INDEX IF EXISTS idx_{table_name}")
+        self.curr.execute(f"DROP TABLE IF EXISTS {table_name}")
+        self.curr.execute(f"DROP INDEX IF EXISTS idx_{table_name}")
         self.conn.commit()
 
     def __del__(self):
         self.conn.close()
         # if os.path.isfile(self.path):
         #     os.remove(self.path)
+
+    def set_primary_key(self, table_name, column):
+        self.execute(
+            f"""
+            ALTER TABLE {table_name} ADD PRIMARY KEY ({column});
+            """
+        )
+
+    def set_unique_columns(self, table_name, columns):
+        self.execute(
+            f"""
+            ALTER TABLE {table_name} ADD CONSTRAINT uniq_{table_name} UNIQUE({",".join(columns)});
+            """
+        )
 
 
 class SharedModel:
@@ -85,7 +105,7 @@ class SharedModel:
         self.set_paths()
         self.load_state()
 
-        self.db = SQLTable(self.db_path)
+        self.db = SQLTable(self.__class__.__name__.lower())
 
         self.set_new_data_flag(last_export)
 
@@ -207,42 +227,39 @@ class SharedModel:
             self.db.replace_records(
                 data, "profiles",
                 dtype={
-                    "profile_id": "INT",
-                    "profile_id_uuid": "TEXT",
-                    "is_deleted": "INT"
+                    "profile_id": Integer,
+                    "profile_id_uuid": UUID,
+                    "is_deleted": Boolean
                 }
             )
 
-            self.db.execute(
-                """
-                ALTER TABLE `profiles` ADD PRIMARY KEY (`profile_id`);
-                ALTER TABLE table_name ADD CONSTRAINT UNIQUE(profile_id_uuid);
-                """
-            )
+            self.db.set_primary_key("profiles", "profile_id")
+            self.db.set_unique_columns("profiles", ["profile_id_uuid"])
 
             self.save_mappings()
 
     def load_billing_info(self, path):
-        data = pd.read_csv(path, dtype={"price": "Float32", "approved": "Float32"}).rename({"short_name": "provider"}, axis=1)
+        data = pd.read_csv(path, dtype={"price": "Float32"}).rename({"short_name": "provider"}, axis=1)
         # data.dropna(subset=["price"], inplace=True)
         # data.eval("price = price.fillna(0.)", inplace=True)
         data.drop_duplicates(subset=["provider", "course_name"], inplace=True)
-        data.eval("approved = approved.fillna(0.)", inplace=True)
         data.eval("provider_course_name = provider + course_name", inplace=True)
         self.convert_ids_to_int(data, ["provider_course_name"])
         data.drop("provider_course_name_uuid", axis=1, inplace=True)
         data.rename({"provider_course_name": "course_id"}, axis=1, inplace=True)
         self.db.replace_records(
-            data[["provider", "course_name", "course_id", "price", "approved"]],
+            data[["provider", "course_name", "course_id", "price"]],
             "billing_info",
             dtype={
-                "course_id": "INT PRIMARY KEY",
-                "provider": "TEXT NOT NULL",
-                "course_name": "TEXT NOT NULL",
-                "price": "REAL NOT NULL",
-                "approved": "REAL NOT NULL"
+                "course_id": Integer,
+                "provider": String,
+                "course_name": String,
+                "price": REAL
             }
         )
+
+        self.db.set_primary_key("billing_info", "course_id")
+        # self.db.set_unique_columns("profiles", ["profile_id_uuid"])
 
         self.save_mappings()
 
@@ -258,10 +275,14 @@ class SharedModel:
                 data[["profile_id", "profile_id_uuid", "grade", "is_deleted"]],
                 "student_grades",
                 dtype={
-                    "profile_id": "INT PRIMARY KEY",
-                    "grade": "INT", "is_deleted": "INT NOT NULL"
+                    "profile_id": Integer,
+                    "grade": Integer,
+                    "is_deleted": Boolean
                 }
             )
+
+            self.db.set_primary_key("student_grades", "profile_id")
+            # self.db.set_unique_columns("profiles", ["profile_id_uuid"])
 
     def load_external_system(self, path):
         # data = pd.read_csv(path)
@@ -345,11 +366,14 @@ class SharedModel:
                 merged[["educational_institution_id", "educational_institution_id_uuid", "special_status"]],
                 "educational_institution",
                 dtype={
-                    "educational_institution_id": "INT PRIMARY KEY",
-                    "educational_institution_id_uuid": "TEXT UNIQUE NOT NULL",
-                    "special_status": "TEXT"
+                    "educational_institution_id": Integer,
+                    "educational_institution_id_uuid": UUID,
+                    "special_status": String
                 }
             )
+
+            self.db.set_primary_key("educational_institution", "educational_institution_id")
+            self.db.set_unique_columns("educational_institution", ["educational_institution_id_uuid"])
 
             self.save_mappings()
 
@@ -369,15 +393,18 @@ class SharedModel:
                     "is_deleted"
                 ]], "profile_approved_status",
                 dtype={
-                    "profile_id": "INT PRIMARY KEY",
-                    "profile_id_uuid": "TEXT UNIQUE NOT NULL",
-                    "approved_status": "TEXT",
-                    "role": "TEXT",
-                    "educational_institution_id": "INT NOT NULL",
-                    "educational_institution_id_uuid": "TEXT NOT NULL",
-                    "is_deleted": "INT NOT NULL"
+                    "profile_id": Integer,
+                    "profile_id_uuid": UUID,
+                    "approved_status": String,
+                    "role": String,
+                    "educational_institution_id": Integer,
+                    "educational_institution_id_uuid": UUID,
+                    "is_deleted": Boolean
                 }
             )  # updated_at
+
+            self.db.set_primary_key("profile_approved_status", "profile_id")
+            self.db.set_unique_columns("profile_approved_status", ["profile_id_uuid"])
 
     def format_course_structure_columns(self, data):
         # fields = ["id", "deleted", "course_type_id", "parent_id", "external_link", "course_name", "external_id",
@@ -433,14 +460,17 @@ class SharedModel:
                     "course_name", "provider", "course_id", "is_deleted"]],
                 "course_information",
                 dtype={
-                    "educational_course_id": "INT PRIMARY KEY",
-                    "educational_course_id_uuid": "TEXT UNIQUE NOT NULL",
-                    "course_name": "TEXT NOT NULL",
-                    "provider": "TEXT NOT NULL",
-                    "course_id": "INT NOT NULL",
-                    "is_deleted": "INT NOT NULL"
+                    "educational_course_id": Integer,
+                    "educational_course_id_uuid": UUID,
+                    "course_name": String,
+                    "provider": String,
+                    "course_id": Integer,
+                    "is_deleted": Boolean
                 }
             )
+
+            self.db.set_primary_key("course_information", "educational_course_id")
+            self.db.set_unique_columns("course_information", ["educational_course_id_uuid"])
 
     def load_course_types(self, path):
         # data = pd.read_csv(path)
@@ -626,14 +656,14 @@ class SharedModel:
                 ).map(lambda x: x.seconds / seconds_in_minute > minimum_active_minutes)
                 self.db.add_records(
                     chunk, "course_statistics",
-                    dtype={
-                        "profile_id": "INT NOT NULL",
-                        "educational_course_id": "INT NOT NULL",
-                        "created_at": "TIMESTAMP NOT NULL",
-                        "day_start": "TIMESTAMP NOT NULL",
-                        "day_end": "TIMESTAMP NOT NULL",
-                        "is_active": "INT NOT NULL",
-                    }
+                    # dtype={
+                    #     "profile_id": "INT NOT NULL",
+                    #     "educational_course_id": "INT NOT NULL",
+                    #     "created_at": "TIMESTAMP NOT NULL",
+                    #     "day_start": "TIMESTAMP NOT NULL",
+                    #     "day_end": "TIMESTAMP NOT NULL",
+                    #     "is_active": "INT NOT NULL",
+                    # }
                 )
 
     def prepare_for_report(self):
@@ -698,26 +728,14 @@ class SharedModel:
 
     def add_licence_info(self, user_report: pd.DataFrame, courses_report: pd.DataFrame):
         licences = []
-        licences_esia = []
         sum_total = []
-        sum_total_esia = []
-        sum_total_approved = []
-        sum_total_esia_approved = []
         for provider in user_report["Платформа"]:
             table = courses_report.query(f"Платформа == '{provider}'")
             licences.append(table["Активные Подтверждённые"].sum())
-            licences_esia.append(table["Активные Подтверждённые (ЕСИА)"].sum())
             sum_total.append(table["Всего за курс"].sum())
-            sum_total_esia.append(table["Всего за курс (ЕСИА)"].sum())
-            sum_total_approved.append(table["Всего за курс (Соответствует)"].sum())
-            sum_total_esia_approved.append(table["Всего за курс (ЕСИА) (Соответствует)"].sum())
 
         user_report["Общее количество лицензий на оплату"] = licences
-        user_report["Общее количество лицензий на оплату (ЕСИА)"] = licences_esia
         user_report["Общая сумма на оплату"] = sum_total
-        user_report["Общая сумма на оплату (ЕСИА)"] = sum_total_esia
-        user_report["Общая сумма на оплату (Соответствует)"] = sum_total_approved
-        user_report["Общая сумма на оплату (ЕСИА) (Соответствует)"] = sum_total_esia_approved
 
         # empty = {key: "" for key in user_report.columns}
         # total = {key: user_report[key].sum() for key in user_report.columns if key != "Платформа"}
@@ -777,20 +795,12 @@ class SharedModel:
                 CAST(COUNT(DISTINCT CASE WHEN active_days >= 5 THEN profile_id ELSE NULL END) AS INTEGER) as "Активных пользователей",
                 CAST(COUNT(DISTINCT CASE WHEN approved_status = 'APPROVED' AND 
                             (
-                                    special_status = 'Получено адресатом' OR special_status == 'Активировали в ноябре'
+                                    special_status = 'Получено адресатом' OR special_status = 'Активировали в ноябре'
                             ) THEN profile_id ELSE NULL END) AS INTEGER) as "Подтверждённых пользователей использующих сервис",
                 CAST(COUNT(DISTINCT CASE WHEN approved_status = 'APPROVED' AND active_days >= 5 AND 
                             (
-                                    special_status = 'Получено адресатом' OR special_status == 'Активировали в ноябре'
-                            ) THEN profile_id ELSE NULL END) AS INTEGER) as "Активных и подтверждённых пользователей",
-                CAST(COUNT(DISTINCT CASE WHEN approved_status = 'APPROVED' AND 
-                            (
-                                    special_status == 'Активировали в ноябре'
-                            ) THEN profile_id ELSE NULL END) AS INTEGER) as "Подтверждённых пользователей использующих сервис (ЕСИА)",
-                CAST(COUNT(DISTINCT CASE WHEN approved_status = 'APPROVED' AND active_days >= 5 AND 
-                            (
-                                    special_status == 'Активировали в ноябре'
-                            ) THEN profile_id ELSE NULL END) AS INTEGER) as "Активных и подтверждённых пользователей (ЕСИА)"
+                                    special_status = 'Получено адресатом' OR special_status = 'Активировали в ноябре'
+                            ) THEN profile_id ELSE NULL END) AS INTEGER) as "Активных и подтверждённых пользователей"
                 FROM
                 full_report
                 GROUP BY
@@ -808,28 +818,19 @@ class SharedModel:
                 Название, 
                 Всего,
                 "Активные Подтверждённые", 
-                "Активные Подтверждённые (ЕСИА)",
                 "Активные Всего",
-                billing_info.approved as "Соответствует требованиям",
                 price as "Цена за одну лицензию",
-                price * "Активные Подтверждённые" AS "Всего за курс",
-                price * "Активные Подтверждённые (ЕСИА)" AS "Всего за курс (ЕСИА)",
-                price * "Активные Подтверждённые" * billing_info.approved AS "Всего за курс (Соответствует)",
-                price * "Активные Подтверждённые (ЕСИА)" * billing_info.approved AS "Всего за курс (ЕСИА) (Соответствует)"
+                price * "Активные Подтверждённые" AS "Всего за курс"
                 FROM (
                     SELECT
                     course_id,
                     platform as "Платформа",
                     course_name as "Название",
                     CAST(COUNT(DISTINCT profile_id) AS INTEGER) as "Всего",
-                    CAST(COUNT(CASE WHEN active_days >=5 AND approved_status == 'APPROVED' AND 
+                    CAST(COUNT(CASE WHEN active_days >=5 AND approved_status = 'APPROVED' AND 
                             (
-                                special_status == 'Получено адресатом' OR special_status == 'Активировали в ноябре'
+                                special_status = 'Получено адресатом' OR special_status = 'Активировали в ноябре'
                             ) THEN 1 ELSE NULL END) AS INTEGER) AS "Активные Подтверждённые",
-                    CAST(COUNT(CASE WHEN active_days >=5 AND approved_status == 'APPROVED' AND 
-                            (
-                                special_status == 'Активировали в ноябре'
-                            ) THEN 1 ELSE NULL END) AS INTEGER) AS "Активные Подтверждённые (ЕСИА)",
                     CAST(COUNT(CASE WHEN active_days >=5 THEN 1 ELSE NULL END) AS INTEGER) AS "Активные Всего"
                     FROM
                     full_report
@@ -846,7 +847,6 @@ class SharedModel:
         self.sort_course_names(self.courses_report, order=["Название", "Платформа"])
 
     def get_report(self):
-        # self.has_new_data = True
         self.prepare_for_report()
         self.prepare_report()
         self.convergence_stat()
@@ -931,10 +931,10 @@ class SharedModel:
                 self.sort_course_names(data, ["Наименование ЦОК", "Наименование образовательной цифровой площадки"])
 
             self.db.add_records(
-                data, "people_billing_report",
-                dtype={
-
-                }
+                data, "people_billing_report", create_indexes=False
+                # dtype={
+                #
+                # }
             )
 
         data = self.db.query("SELECT * FROM people_billing_report")
@@ -1038,7 +1038,7 @@ class Course_MEO(SharedModel):
         files = sorted(os.listdir(path))
         files = self.filter_statistics_files(files)
         for file in files:
-            super().load_course_statistics(os.path.join(path, file), "Start", sep="|", dtype={"CourseId": "string"})
+            super().load_course_statistics(os.path.join(path, file), "Start", sep=";", dtype={"CourseId": "string"})
 
     def resolve_structure(self, data):
         return data
@@ -1058,14 +1058,17 @@ class Course_MEO(SharedModel):
                     "course_name", "provider", "course_id", "is_deleted"]],
                 "course_information",
                 dtype={
-                    "educational_course_id": "INT PRIMARY KEY",
-                    "educational_course_id_uuid": "TEXT UNIQUE NOT NULL",
-                    "course_name": "TEXT NOT NULL",
-                    "provider": "TEXT NOT NULL",
-                    "course_id": "INT NOT NULL",
-                    "is_deleted": "INT NOT NULL"
+                    "educational_course_id": Integer,
+                    "educational_course_id_uuid": UUID,
+                    "course_name": String,
+                    "provider": String,
+                    "course_id": String,
+                    "is_deleted": Boolean
                 }
             )
+
+            self.db.set_primary_key("course_information", "educational_course_id")
+            self.db.set_unique_columns("course_information", ["educational_course_id_uuid"])
 
 
 class Course_Uchi(SharedModel):
@@ -1108,7 +1111,7 @@ class Course_Uchi(SharedModel):
         files = sorted(os.listdir(path))
         files = self.filter_statistics_files(files)
         for file in files:
-            super().load_course_statistics(os.path.join(path, file), "createdAt", dtype={"externalId": "string"})  #, sep="\t")
+            super().load_course_statistics(os.path.join(path, file), "createdAt", dtype={"externalId": "string"})  # , sep="\t")
 
 
 class ReportWriter:
@@ -1166,7 +1169,7 @@ class ReportWriter:
             report_html.write(html)
 
     def format_worksheet(self, workbook, worksheet, data, max_column_len=80, long_column=None):
-        format = workbook.add_format({'text_wrap': True, 'num_format': '#,##0.######'})
+        format = workbook.add_format({'text_wrap': True})
         for ind, col in enumerate(data.columns):
             def get_max_len(data):
                 if len(data) == 0:
@@ -1187,20 +1190,9 @@ class ReportWriter:
             name = "_".join([part[:4] + "." for part in parts])
         return name
 
-    def cell_formatter(self, value):
-        if pd.isna(value) or isinstance(value, str):
-            return value
-        else:
-            val = float(value)
-            if val.is_integer():
-                return f"{int(val):,}"
-            else:
-                return f"{val:,.3f}"
-
     def write_xlsx(self, sheet_names, sheet_data, sheet_options, name):
         with pd.ExcelWriter(self.html_path.joinpath(f'{name}.xlsx'), engine='xlsxwriter') as writer:
             for sheet_name, data, options in zip(sheet_names, sheet_data, sheet_options):
-                # data = data.applymap(self.cell_formatter)
                 data.to_excel(writer, sheet_name=sheet_name, index=False)
                 self.format_worksheet(
                     writer.book, writer.sheets[sheet_name], data, long_column=options.get("long_column", None)
@@ -1473,14 +1465,14 @@ def process_statistics(
     logging.info("Processing")
 
     provider_data = [
-        # Course_1C_ND(
-        #     billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
-        #     external_system=external_system, profile_educational_institution=profile_educational_institution,
-        #     course_structure=course_structure, course_types=course_types, course_statistics=course_statistics,
-        #     last_export=last_export, resources_path=resources_path, freeze_date=freeze_date,
-        #     educational_institution=educational_institution_path, minute_activity=minute_activity,
-        #     profiles=profiles_path
-        # ),
+        Course_1C_ND(
+            billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
+            external_system=external_system, profile_educational_institution=profile_educational_institution,
+            course_structure=course_structure, course_types=course_types, course_statistics=course_statistics,
+            last_export=last_export, resources_path=resources_path, freeze_date=freeze_date,
+            educational_institution=educational_institution_path, minute_activity=minute_activity,
+            profiles=profiles_path
+        ),
         # Course_FoxFord(
         #     billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
         #     external_system=external_system, profile_educational_institution=profile_educational_institution,
@@ -1489,22 +1481,22 @@ def process_statistics(
         #     freeze_date=freeze_date, educational_institution=educational_institution_path, minute_activity=minute_activity,
         #     profiles = profiles_path
         # ),
-        Course_MEO(
-            billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
-            external_system=external_system, profile_educational_institution=profile_educational_institution,
-            course_structure=course_structure_meo, course_types=course_types,
-            course_statistics=course_statistics_meo, last_export=last_export, resources_path=resources_path,
-            freeze_date=freeze_date, educational_institution=educational_institution_path, minute_activity=minute_activity,
-            profiles=profiles_path
-        ),
-        Course_Uchi(
-            billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
-            external_system=external_system, profile_educational_institution=profile_educational_institution,
-            course_structure=course_structure, course_types=course_types, course_statistics=course_statistics_uchi,
-            last_export=last_export, resources_path=resources_path, freeze_date=freeze_date,
-            educational_institution=educational_institution_path, minute_activity=minute_activity,
-            profiles=profiles_path
-        )
+        # Course_MEO(
+        #     billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
+        #     external_system=external_system, profile_educational_institution=profile_educational_institution,
+        #     course_structure=course_structure_meo, course_types=course_types,
+        #     course_statistics=course_statistics_meo, last_export=last_export, resources_path=resources_path,
+        #     freeze_date=freeze_date, educational_institution=educational_institution_path, minute_activity=minute_activity,
+        #     profiles=profiles_path
+        # ),
+        # Course_Uchi(
+        #     billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
+        #     external_system=external_system, profile_educational_institution=profile_educational_institution,
+        #     course_structure=course_structure, course_types=course_types, course_statistics=course_statistics_uchi,
+        #     last_export=last_export, resources_path=resources_path, freeze_date=freeze_date,
+        #     educational_institution=educational_institution_path, minute_activity=minute_activity,
+        #     profiles=profiles_path
+        # )
     ]
 
     reports = get_reports(provider_data, region_info_path)
