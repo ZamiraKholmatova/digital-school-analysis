@@ -5,7 +5,7 @@ import os
 import pickle
 import sqlite3
 from collections import defaultdict, namedtuple
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from shutil import rmtree
 from typing import Optional
@@ -241,7 +241,7 @@ class SharedModel:
 
     def load_student_grades(self, path):
         if self.has_new_data:
-            # data = pd.read_csv(path, dtype={"grade": "Int32"}).rename({"id": "profile_id"}, axis=1)
+            # data = pd.read_csv(path, dtype={"grade": "Int64"}).rename({"id": "profile_id"}, axis=1)
             data = pd.read_pickle(path, compression=None).rename({"id": "profile_id"}, axis=1)
             self.convert_ids_to_int(data, ["profile_id"], add_new=False)
             for field in ["grade", "profile_id"]:
@@ -267,21 +267,24 @@ class SharedModel:
             letters_status = pd.read_pickle(cached, compression=None)
         else:
             letters_status = pd.read_excel(
-                path, dtype={"ИНН": "string"}, engine="openpyxl"
+                path, dtype={"ИНН": "Int64"}, engine="openpyxl"
             )
             letters_status.to_pickle(cached, compression=None)
-        return letters_status[["ИНН", "Статус письма"]]
+        return letters_status[["ИНН", "Статус письма"]].dropna(subset=["ИНН"])
 
     def read_schools_approved_in_november(self, path):
-        cached = str(path.absolute()).replace(".xlsx", ".bz2")
-        if Path(cached).is_file():
-            november_schools = pd.read_pickle(cached, compression=None)
-        else:
-            november_schools = pd.read_excel(
-                path, dtype={"ИНН": "string"}, engine="openpyxl"
-            )
-            november_schools.to_pickle(cached, compression=None)
-        return november_schools[["ИНН"]]
+        schools = pd.read_csv(path, dtype={"inn": "Int64"})
+        schools = schools.query("approved == 1").rename({"inn": "ИНН"}, axis=1).dropna()
+        return schools[["ИНН"]]
+        # cached = str(path.absolute()).replace(".xlsx", ".bz2")
+        # if Path(cached).is_file():
+        #     november_schools = pd.read_pickle(cached, compression=None)
+        # else:
+        #     november_schools = pd.read_excel(
+        #         path, dtype={"ИНН": "string"}, engine="openpyxl"
+        #     )
+        #     november_schools.to_pickle(cached, compression=None)
+        # return november_schools[["ИНН"]]
 
     def merge_special_status(self, paper_letters, approved_in_november):
         approved_status = paper_letters.copy()
@@ -294,6 +297,7 @@ class SharedModel:
 
         special_status_records = []
         for ind, row in approved_status.iterrows():
+            if row["ИНН"] in approved_in_november: continue
             rec = {
                 "inn": row["ИНН"],
                 "special_status": row["Статус письма"]
@@ -302,7 +306,7 @@ class SharedModel:
                 rec["special_status"] = activated_in_november_status
             special_status_records.append(rec)
 
-        for school in approved_in_november - set(approved_status["ИНН"]):
+        for school in approved_in_november:  # - set(approved_status["ИНН"]):
             rec = {
                 "inn": school,
                 "special_status": activated_in_november_status
@@ -313,38 +317,39 @@ class SharedModel:
         return special_status
 
     def load_educational_institution(self, path):
-        if self.has_new_data:
-            path = Path(path)
-            # data = pd.read_csv(path, dtype={"inn": "string"}) \
-            #     .rename({"id": "educational_institution_id"}, axis=1)
-            data = pd.read_pickle(path, compression=None) \
-                .rename({"id": "educational_institution_id"}, axis=1)
+        # if self.has_new_data:
+        path = Path(path)
+        # data = pd.read_csv(path, dtype={"inn": "string"}) \
+        #     .rename({"id": "educational_institution_id"}, axis=1)
+        data = pd.read_pickle(path, compression=None) \
+            .rename({"id": "educational_institution_id"}, axis=1).astype({"inn": "Int64"})
 
-            paper_letters = self.read_paper_letters_info(path.parent.joinpath("schools_paper_letters.xlsx"))
+        paper_letters = self.read_paper_letters_info(path.parent.joinpath("schools_paper_letters.xlsx"))
 
-            approved_in_november = self.read_schools_approved_in_november(
-                path.parent.joinpath("schools_approved_in_november.xlsx")
-            )
+        approved_in_november = self.read_schools_approved_in_november(
+            path.parent.joinpath("approved_in_november____.csv")
+            # path.parent.joinpath("schools_approved_in_november.xlsx")
+        )
 
-            special_status = self.merge_special_status(paper_letters, approved_in_november)
+        special_status = self.merge_special_status(paper_letters, approved_in_november)
 
-            paper_letters.merge(special_status, how="outer", left_on="ИНН", right_on="inn").to_csv("schools_special_status.csv", index=False)
+        paper_letters.merge(special_status, how="outer", left_on="ИНН", right_on="inn").to_csv("schools_special_status.csv", index=False)
 
-            merged = data.merge(special_status, how="left", left_on="inn", right_on="inn").drop("inn", axis=1)
+        merged = data.merge(special_status, how="left", left_on="inn", right_on="inn").drop("inn", axis=1)
 
-            self.convert_ids_to_int(merged, ["educational_institution_id"])
+        self.convert_ids_to_int(merged, ["educational_institution_id"])
 
-            self.db.replace_records(
-                merged[["educational_institution_id", "educational_institution_id_uuid", "special_status"]],
-                "educational_institution",
-                dtype={
-                    "educational_institution_id": "INT PRIMARY KEY",
-                    "educational_institution_id_uuid": "TEXT UNIQUE NOT NULL",
-                    "special_status": "TEXT"
-                }
-            )
+        self.db.replace_records(
+            merged[["educational_institution_id", "educational_institution_id_uuid", "special_status"]],
+            "educational_institution",
+            dtype={
+                "educational_institution_id": "INT PRIMARY KEY",
+                "educational_institution_id_uuid": "TEXT UNIQUE NOT NULL",
+                "special_status": "TEXT"
+            }
+        )
 
-            self.save_mappings()
+        self.save_mappings()
 
     def load_profile_approved_status(self, path):
         if self.has_new_data:
@@ -397,6 +402,19 @@ class SharedModel:
                 "provider": provider,
                 "is_deleted": is_deleted
             })
+
+        # mapping.append({
+        #     "educational_course_id": "Course_XX01",
+        #     "course_name": "Интерактивный курс по развитию личностных навыков для младшей школы",
+        #     "provider": "Учи.Ру",
+        #     "is_deleted": False
+        # })
+        # mapping.append({
+        #     "educational_course_id": "Course_XX02",
+        #     "course_name": "Интерактивный курс по развитию личностных навыков для средней школы",
+        #     "provider": "Учи.Ру",
+        #     "is_deleted": False
+        # })
         return pd.DataFrame(mapping)
 
     def prepare_course_ids(self, data, path):
@@ -480,16 +498,11 @@ class SharedModel:
     def preprocess_chunk(self, chunk: pd.DataFrame, path, error_buffer, drop_duplicates=False):
         path = Path(path)
         self.map_course_statistics_columns(chunk)
-        column_order = ["profile_id", "educational_course_id", "created_at"]
+        column_order = ["profile_id", "educational_course_id", "date", "start_time", "end_time", "dt"]
         chunk = chunk[column_order]
         # chunk.dropna(axis=0, inplace=True)
         for col in column_order:
             self.check_for_nas(chunk, col, path, error_buffer=error_buffer)
-            # chunk = chunk[~chunk[col].isnull()]
-        chunk.eval("created_at_original = created_at", inplace=True)
-        chunk.eval("created_at = created_at.dt.normalize()", inplace=True)
-        # chunk["created_at_original"] = chunk["created_at"]
-        # chunk["created_at"] = chunk["created_at"].dt.normalize()
         self.convert_ids_to_int(chunk, ["profile_id", "educational_course_id"], add_new=False)
         chunk.eval( # this lookup can fail only if convert_ids_to_int fails
             "educational_course_id = educational_course_id.map(@resolve_id)",
@@ -511,32 +524,38 @@ class SharedModel:
         pass
 
     def filter_statistics_files(self, files):
-        return filter(lambda filename: filename.endswith(".csv") and not filename.startswith("."), files)
+        return filter(lambda filename: filename.endswith("___preprocessed.tsv") and not filename.startswith("."), files)
 
-    def load_course_statistics(self, path, date_field="created_at", **kwargs):
+    def load_course_statistics_file(self, path, date_field="created_at", **kwargs):
         self.prepare_statistics_table()
-        target_table = "course_statistics" if self.minute_activity is False else "course_statistics_pre"
+        target_table = "course_statistics_pre"
         filename = os.path.basename(path)
         if filename not in self.processed_files:
             error_buffer = {}
             for ind, chunk in enumerate(pd.read_csv(
-                    path, chunksize=self.statistics_import_chunk_size, parse_dates=[date_field], **kwargs
+                    path,
+                    chunksize=self.statistics_import_chunk_size,
+                    parse_dates=["date", "start_time", "end_time"],
+                    sep="\t", header=None,
+                    names=["profile_id", "educational_course_id", "date", "start_time", "end_time", "dt"],
+                    dtype={"educational_course_id": "string"},
+                    **kwargs
             )):
                 self.db.add_records(
                     self.preprocess_chunk(chunk, path, error_buffer, drop_duplicates=not self.minute_activity),
                     target_table,
-                    # dtype={
-                    #     "profile_id": "INT NOT NULL",
-                    #     "educational_course_id": "INT NOT NULL",
-                    #     "created_at": "TIMESTAMP NOT NULL",
-                    #     "created_at_original": "TIMESTAMP NOT NULL"
-                    # }
                 )
             for error_file, content in error_buffer.items():
                 content.to_csv(error_file, index=False, sep="\t")
             self.processed_files.append(filename)
             self.has_new_data = True
             self.save_state()
+
+    def load_course_statistics(self, path, date_field=None, dtype=None):
+        files = sorted(os.listdir(path))
+        files = self.filter_statistics_files(files)
+        for file in files:
+            self.load_course_statistics_file(os.path.join(path, file))
 
     def entry_valid(self, profile_id, statistic_type_id, educational_course_id, created_at):
         profile_id = profile_id  # entry["profile_id"]
@@ -579,7 +598,7 @@ class SharedModel:
 
     def get_freeze_date_filtration_rule(self):
         if self.freeze_date is not None:
-            return f"WHERE course_statistics.created_at < '{self.freeze_date}'"
+            return f"WHERE course_statistics.date < '{self.freeze_date}'"
         else:
             return ""
 
@@ -602,32 +621,35 @@ class SharedModel:
 
         if self.has_new_data:
             self.db.drop_table("course_statistics")
-            chunks = self.db.query(
+            self.db.execute(
                 """
-                SELECT 
-                profile_id, educational_course_id, CAST(created_at AS TIMESTAMP), 
-                CAST(min(created_at_original) AS TIMESTAMP) as day_start, CAST(max(created_at_original) AS TIMESTAMP) as day_end  
+                CREATE TABLE course_statistics AS
+                SELECT
+                profile_id, educational_course_id, date, 
+                sum(dt) as active_time,
+                sum(dt) >= 600 as is_active
                 FROM 
                 course_statistics_pre
-                GROUP BY profile_id, educational_course_id, created_at
-                """, chunksize=self.statistics_import_chunk_size
+                GROUP BY
+                profile_id, educational_course_id, date
+                """,
             )
 
-            for chunk in chunks:
-                chunk["is_active"] = (
-                        pd.to_datetime(chunk["day_end"]) - pd.to_datetime(chunk["day_start"])
-                ).map(lambda x: x.seconds / seconds_in_minute > minimum_active_minutes)
-                self.db.add_records(
-                    chunk, "course_statistics",
-                    dtype={
-                        "profile_id": "INT NOT NULL",
-                        "educational_course_id": "INT NOT NULL",
-                        "created_at": "TIMESTAMP NOT NULL",
-                        "day_start": "TIMESTAMP NOT NULL",
-                        "day_end": "TIMESTAMP NOT NULL",
-                        "is_active": "INT NOT NULL",
-                    }
-                )
+            # for chunk in chunks:
+            #     chunk["is_active"] = (
+            #             pd.to_datetime(chunk["day_end"]) - pd.to_datetime(chunk["day_start"])
+            #     ).map(lambda x: x.seconds / seconds_in_minute > minimum_active_minutes)
+            #     self.db.add_records(
+            #         chunk, "course_statistics",
+            #         dtype={
+            #             "profile_id": "INT NOT NULL",
+            #             "educational_course_id": "INT NOT NULL",
+            #             "created_at": "TIMESTAMP NOT NULL",
+            #             "day_start": "TIMESTAMP NOT NULL",
+            #             "day_end": "TIMESTAMP NOT NULL",
+            #             "is_active": "INT NOT NULL",
+            #         }
+            #     )
 
     def prepare_for_report(self):
 
@@ -848,87 +870,104 @@ class SharedModel:
         return self.courses_report, self.user_report, self._conv_stat
 
     def get_people_for_billing(self, num_days_to_be_considered_active=5):
-        if self.has_new_data:
-            self.db.drop_table("billing")
-            self.db.drop_table("people_billing_report")
+        # if self.has_new_data:
+        self.db.drop_table("billing")
+        self.db.drop_table("people_billing_report")
 
-            self.db.execute(
-                f"""
-                CREATE TABLE billing AS
-                SELECT platform, course_name, profile_id, profile_id_uuid, special_status
-                FROM full_report
-                WHERE approved_status = 'APPROVED' 
-                AND special_status NOT NULL 
-                AND active_days >= {num_days_to_be_considered_active}
-                """
-            )
+        self.db.execute(
+            f"""
+            CREATE TABLE billing AS
+            SELECT platform, course_name, profile_id, profile_id_uuid, special_status
+            FROM full_report
+            WHERE approved_status = 'APPROVED' and special_status = 'Активировали в ноябре'
+            AND special_status NOT NULL 
+            AND active_days >= {num_days_to_be_considered_active}
+            """
+        )
 
-            people_courses_for_billing = self.db.query("SELECT * FROM billing") \
-                .drop("special_status", axis=1) \
-                .drop("profile_id", axis=1) \
-                .rename({"profile_id_uuid": "profile_id"}, axis=1)
+        people_courses_for_billing = self.db.query("SELECT * FROM billing") \
+            .drop("special_status", axis=1) \
+            .drop("profile_id", axis=1) \
+            .rename({"profile_id_uuid": "profile_id"}, axis=1)
 
-            people_courses_filter = set(
-                (pl, c, per) for pl, c, per in people_courses_for_billing.values
-            )
+        people_courses_filter = set(
+            (pl, c, per) for pl, c, per in people_courses_for_billing.values
+        )
 
-            course_statistics = self.db.query(  # can improve filtration by adding course name to the filter
-                """
-                SELECT 
-                DISTINCT provider, course_name, profile_id_uuid as "profile_id", created_at as "visit_date" 
-                FROM 
-                course_statistics
-                LEFT JOIN course_information ON course_statistics.educational_course_id = course_information.course_id
-                LEFT JOIN profile_approved_status ON course_statistics.profile_id = profile_approved_status.profile_id
-                WHERE course_statistics.profile_id IN (
-                    SELECT DISTINCT profile_id FROM billing
-                ) 
-                ORDER BY created_at
-                """,
-                chunksize=self.statistics_import_chunk_size
-            )
+        course_statistics = self.db.query(  # can improve filtration by adding course name to the filter
+            """
+            SELECT 
+            DISTINCT provider, course_name, profile_approved_status.profile_id_uuid as "profile_id", date as "visit_date",
+            active_time as "active_time", grade, special_status
+            FROM 
+            course_statistics
+            LEFT JOIN course_information ON course_statistics.educational_course_id = course_information.course_id
+            LEFT JOIN profile_approved_status ON course_statistics.profile_id = profile_approved_status.profile_id
+            LEFT JOIN student_grades on course_statistics.profile_id = student_grades.profile_id
+            LEFT JOIN educational_institution ON profile_approved_status.educational_institution_id = educational_institution.educational_institution_id
+            WHERE course_statistics.profile_id IN (
+                SELECT DISTINCT profile_id FROM billing
+            ) 
+            ORDER BY date
+            """,
+            chunksize=self.statistics_import_chunk_size
+        )
 
-            people_courses_visits = defaultdict(list)
-            for chunk in course_statistics:
-                for provider, course_name, profile_id, visit_date in chunk[
-                    ["provider", "course_name", "profile_id", "visit_date"]
-                ].values:
-                    key = (provider, course_name, profile_id)
-                    if key not in people_courses_filter:
-                        continue
-                    if len(people_courses_visits[key]) == num_days_to_be_considered_active:
-                        continue
-                    people_courses_visits[key].append(visit_date)
+        people_courses_visits = defaultdict(list)
+        grades = {}
+        for chunk in course_statistics:
+            for provider, course_name, profile_id, visit_date, active_time, grade, special_status in chunk[
+                ["provider", "course_name", "profile_id", "visit_date", "active_time", "grade", "special_status"]
+            ].values:
+                key = (provider, course_name, profile_id)
+                grades[profile_id] = grade
+                if key not in people_courses_filter:
+                    continue
+                if len(people_courses_visits[key]) == num_days_to_be_considered_active:
+                    continue
+                if active_time >= 600:
+                    assert special_status == "Активировали в ноябре"
+                    people_courses_visits[key].append((visit_date, active_time))
 
-            records = []
-            for key, dates in people_courses_visits.items():
-                assert len(dates) == num_days_to_be_considered_active
-                platform, course_name, profile_id = key
+        records = []
+        for key, dates in people_courses_visits.items():
+            assert len(dates) == num_days_to_be_considered_active
+            platform, course_name, profile_id = key
+            for ind, (date, duration) in enumerate(dates):
                 record = {
                     "Наименование образовательной цифровой площадки": platform,
                     "Наименование ЦОК": course_name,
                     "Идентификационный номер обучающегося": profile_id,
+                    # "Класс": grades[profile_id],
+                    "Дата использования курса": date.split(" ")[0],
+                    "Длительность использования курса, ч:м:с": str(timedelta(seconds=int(duration)))
                 }
-
-                for ind, date in enumerate(dates):
-                    record[f"День {ind + 1}"] = date.split(" ")[0]
-
                 records.append(record)
 
-            data = pd.DataFrame.from_records(records, columns=[
-                "Наименование образовательной цифровой площадки",
-                "Наименование ЦОК",
-                "Идентификационный номер обучающегося",
-            ] + [f"День {ind + 1}" for ind in range(num_days_to_be_considered_active)]).astype("string")
-            if len(data) > 0:
-                self.sort_course_names(data, ["Наименование ЦОК", "Наименование образовательной цифровой площадки"])
+            # for ind, date in enumerate(dates):
+            #     record[f"День {ind + 1}"] = date.split(" ")[0]
+            # records.append(record)
 
-            self.db.add_records(
-                data, "people_billing_report",
-                dtype={
+        # data = pd.DataFrame.from_records(records, columns=[
+        #     "Наименование образовательной цифровой площадки",
+        #     "Наименование ЦОК",
+        #     "Идентификационный номер обучающегося",
+        # ] + [f"День {ind + 1}" for ind in range(num_days_to_be_considered_active)]).astype("string")
 
-                }
-            )
+        data = pd.DataFrame.from_records(records, columns=[
+            "Наименование образовательной цифровой площадки", "Наименование ЦОК",
+            "Идентификационный номер обучающегося", "Дата использования курса",
+            "Длительность использования курса, ч:м:с"
+        ]).astype("string")
+        if len(data) > 0:
+            self.sort_course_names(data, ["Наименование ЦОК", "Наименование образовательной цифровой площадки"])
+
+        self.db.add_records(
+            data, "people_billing_report",
+            dtype={
+
+            }
+        )
 
         data = self.db.query("SELECT * FROM people_billing_report")
 
@@ -946,6 +985,21 @@ class Course_1C_ND(SharedModel):
 
     def format_course_structure_columns(self, data):
         return data.rename({"deleted": "is_deleted"}, axis=1)
+
+    # def format_course_structure_columns(self, data):
+    #     data.drop(["id", "parent_id"], axis=1, inplace=True)
+    #     data = data.query(f"system_code == '0b37f22e-c46c-4d53-b0e7-8bdaaf51a8d0'")
+    #     # uchi_system_code = "d2735d92-6ad6-49c4-9b36-c3b16cee695d"
+    #     # uchi_course_data = data.query(f"system_code == '{uchi_system_code}'")
+    #     data.rename({
+    #         "external_id": "id",
+    #         "external_parent_id": "parent_id",
+    #         # "courseName": "course_name",
+    #         "courseTypeId": "course_type_id",
+    #         "externalLink": "external_link"
+    #     }, axis=1, inplace=True)
+    #     # data["system_code"] =
+    #     return data.astype({"id": "string", "parent_id": "string"})  # lesson chapter topic course
 
 
 class Course_FoxFord(SharedModel):
@@ -986,12 +1040,12 @@ class Course_FoxFord(SharedModel):
             assert parent_id == structure[id_]["parent_id"]
 
     def map_course_statistics_columns(self, data):
-        data.rename({
-            "createdat": "created_at",
-            "profileid": "profile_id",
-            "statisticstypeid": "statistic_type_id",
-            "externalid": "educational_course_id",
-        }, axis=1, inplace=True)
+        # data.rename({
+        #     "createdat": "created_at",
+        #     "profileid": "profile_id",
+        #     "statisticstypeid": "statistic_type_id",
+        #     "externalid": "educational_course_id",
+        # }, axis=1, inplace=True)
         def normalize(id_):
             if pd.isna(id_):
                 return id_
@@ -1004,12 +1058,6 @@ class Course_FoxFord(SharedModel):
         )
         return data
 
-    def load_course_statistics(self, path, date_field=None, dtype=None):
-        files = sorted(os.listdir(path))
-        files = self.filter_statistics_files(files)
-        for file in files:
-            super().load_course_statistics(os.path.join(path, file), "createdat")
-
 
 class Course_MEO(SharedModel):
     def __init__(self, *args, **kwargs):
@@ -1017,48 +1065,19 @@ class Course_MEO(SharedModel):
 
     def format_course_structure_columns(self, data):
         data.rename({"material_id": "educational_course_id"}, axis=1, inplace=True)
-        return data
+        return data.astype({"educational_course_id": "string"})
 
     def map_course_statistics_columns(self, data):
-        data.rename({
-            "Start": "created_at",
-            "profileId": "profile_id",
-            "CourseId": "educational_course_id",
-        }, axis=1, inplace=True)
+        # data.rename({
+        #     "Start": "created_at",
+        #     "profileId": "profile_id",
+        #     "CourseId": "educational_course_id",
+        # }, axis=1, inplace=True)
+        # data.astype({"educational_course_id": "Int64"}, inplace=True)
         return data
-
-    def load_course_statistics(self, path, date_field=None, dtype=None):
-        files = sorted(os.listdir(path))
-        files = self.filter_statistics_files(files)
-        for file in files:
-            super().load_course_statistics(os.path.join(path, file), "Start", sep="|", dtype={"CourseId": "string"})
 
     def resolve_structure(self, data):
         return data
-
-    def load_course_structure(self, path):
-        if self.has_new_data:
-            data = self.format_course_structure_columns(pd.read_csv(path, dtype={"material_id": "string"}))
-            if "is_deleted" in data.columns:
-                self.normalize_is_deleted_field(data)
-            else:
-                data["is_deleted"] = False
-            data = self.resolve_structure(data)
-            data = self.prepare_course_ids(data, path)
-            self.db.replace_records(
-                data[[
-                    "educational_course_id", "educational_course_id_uuid",
-                    "course_name", "provider", "course_id", "is_deleted"]],
-                "course_information",
-                dtype={
-                    "educational_course_id": "INT PRIMARY KEY",
-                    "educational_course_id_uuid": "TEXT UNIQUE NOT NULL",
-                    "course_name": "TEXT NOT NULL",
-                    "provider": "TEXT NOT NULL",
-                    "course_id": "INT NOT NULL",
-                    "is_deleted": "INT NOT NULL"
-                }
-            )
 
 
 class Course_Uchi(SharedModel):
@@ -1089,19 +1108,14 @@ class Course_Uchi(SharedModel):
         return data  # lesson chapter topic course
 
     def map_course_statistics_columns(self, data):
-        data.rename({
-            "createdAt": "created_at",
-            "statisticsTypeId": "statistic_type_id",
-            "userId": "profile_id",
-            "externalId": "educational_course_id",
-        }, axis=1, inplace=True)
-        return data[["profile_id", "educational_course_id", "created_at"]]
-
-    def load_course_statistics(self, path, date_field=None, dtype=None):
-        files = sorted(os.listdir(path))
-        files = self.filter_statistics_files(files)
-        for file in files:
-            super().load_course_statistics(os.path.join(path, file), "createdAt", dtype={"externalId": "string"})  #, sep="\t")
+        pass
+        # data.rename({
+        #     "createdAt": "created_at",
+        #     "statisticsTypeId": "statistic_type_id",
+        #     "userId": "profile_id",
+        #     "externalId": "educational_course_id",
+        # }, axis=1, inplace=True)
+        # return data[["profile_id", "educational_course_id", "created_at"]]
 
 
 class ReportWriter:
@@ -1158,8 +1172,16 @@ class ReportWriter:
         with open(self.html_path.joinpath(f"{name}.html"), "w") as report_html:
             report_html.write(html)
 
-    def format_worksheet(self, workbook, worksheet, data, max_column_len=80, long_column=None):
+    def format_worksheet(self, workbook, worksheet, data, max_column_len=30, long_column=None):
         format = workbook.add_format({'text_wrap': True, 'num_format': '#,##0.######'})
+        header_format = workbook.add_format({
+            'bold': True,
+            'text_wrap': True,
+            'valign': 'vcenter',
+            'align': 'center',
+            'fg_color': '#F2F2F2',
+            'border': 1
+        })
         for ind, col in enumerate(data.columns):
             def get_max_len(data):
                 if len(data) == 0:
@@ -1170,6 +1192,7 @@ class ReportWriter:
                 max_column_len if ind != long_column else max_column_len * 2
             ) + 4
             worksheet.set_column(ind, ind, col_width, format)
+            worksheet.write(0, ind, col, header_format)
 
     def normalize_worksheet_name(self, name):
         prohibited = "[]:*?/\\"
@@ -1194,7 +1217,7 @@ class ReportWriter:
         with pd.ExcelWriter(self.html_path.joinpath(f'{name}.xlsx'), engine='xlsxwriter') as writer:
             for sheet_name, data, options in zip(sheet_names, sheet_data, sheet_options):
                 # data = data.applymap(self.cell_formatter)
-                data.to_excel(writer, sheet_name=sheet_name, index=False)
+                data.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1, header=False)
                 self.format_worksheet(
                     writer.book, writer.sheets[sheet_name], data, long_column=options.get("long_column", None)
                 )
@@ -1338,6 +1361,8 @@ class BillingReportWriter(ReportWriter):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        self.name = "billing_report_uchi"
+
     def add_billing_info_as_sheets(self, billing_report):
         course_index = []
 
@@ -1352,7 +1377,7 @@ class BillingReportWriter(ReportWriter):
                 "Наименование образовательной цифровой площадки": platform,
                 "Наименование ЦОК": course,
                 "Страница": sheet_name,
-                "Всего лицензий": len(data)
+                # "Всего лицензий": len(data)
             })
             self.add_sheet(sheet_name, data, {"long_column": 1})
 
@@ -1362,8 +1387,11 @@ class BillingReportWriter(ReportWriter):
         self.sheet_data.insert(0, course_index_df)
         self.sheet_options.insert(0, {"long_column": 1})
 
+    def set_name(self, name):
+        self.name = name
+
     def get_report_name(self):
-        return f"billing_report_uchi_{self.last_export}"
+        return f"{self.name}_{self.last_export}"
 
     def write_index_html(self, name):
         pass
@@ -1466,22 +1494,22 @@ def process_statistics(
     logging.info("Processing")
 
     provider_data = [
-        # Course_1C_ND(
-        #     billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
-        #     external_system=external_system, profile_educational_institution=profile_educational_institution,
-        #     course_structure=course_structure, course_types=course_types, course_statistics=course_statistics,
-        #     last_export=last_export, resources_path=resources_path, freeze_date=freeze_date,
-        #     educational_institution=educational_institution_path, minute_activity=minute_activity,
-        #     profiles=profiles_path
-        # ),
-        # Course_FoxFord(
-        #     billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
-        #     external_system=external_system, profile_educational_institution=profile_educational_institution,
-        #     course_structure=course_structure_foxford, course_types=course_types,
-        #     course_statistics=course_statistics_foxford, last_export=last_export, resources_path=resources_path,
-        #     freeze_date=freeze_date, educational_institution=educational_institution_path, minute_activity=minute_activity,
-        #     profiles = profiles_path
-        # ),
+        Course_1C_ND(
+            billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
+            external_system=external_system, profile_educational_institution=profile_educational_institution,
+            course_structure=course_structure, course_types=course_types, course_statistics=course_statistics,
+            last_export=last_export, resources_path=resources_path, freeze_date=freeze_date,
+            educational_institution=educational_institution_path, minute_activity=minute_activity,
+            profiles=profiles_path
+        ),
+        Course_FoxFord(
+            billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
+            external_system=external_system, profile_educational_institution=profile_educational_institution,
+            course_structure=course_structure_foxford, course_types=course_types,
+            course_statistics=course_statistics_foxford, last_export=last_export, resources_path=resources_path,
+            freeze_date=freeze_date, educational_institution=educational_institution_path, minute_activity=minute_activity,
+            profiles = profiles_path
+        ),
         Course_MEO(
             billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
             external_system=external_system, profile_educational_institution=profile_educational_institution,
@@ -1527,17 +1555,39 @@ def process_statistics(
 
         report_writer.save_report()
 
-        common_billing_report_writer = CommonBillingReportWriter(last_export, html_path, queries_path=Path(course_types).parent)
-        common_billing_report_writer.add_sheet(
-            "ЦОК",
-            reports.billing_report.query("`Наименование образовательной цифровой площадки` != 'Учи.Ру'")
-        )
-        common_billing_report_writer.save_report()
+        # common_billing_report_writer = CommonBillingReportWriter(last_export, html_path, queries_path=Path(course_types).parent)
+        # common_billing_report_writer.add_sheet(
+        #     "ЦОК",
+        #     reports.billing_report.query("`Наименование образовательной цифровой площадки` != 'Учи.Ру'")
+        # )
+        # common_billing_report_writer.save_report()
 
         billing_report_writer = BillingReportWriter(last_export, html_path, queries_path=Path(course_types).parent)
         billing_report_writer.add_billing_info_as_sheets(
             reports.billing_report.query("`Наименование образовательной цифровой площадки` == 'Учи.Ру'")
         )
+        billing_report_writer.set_name("billing_report_uchi")
+        billing_report_writer.save_report()
+
+        billing_report_writer = BillingReportWriter(last_export, html_path, queries_path=Path(course_types).parent)
+        billing_report_writer.add_billing_info_as_sheets(
+            reports.billing_report.query("`Наименование образовательной цифровой площадки` == 'МЕО'")
+        )
+        billing_report_writer.set_name("billing_report_meo")
+        billing_report_writer.save_report()
+
+        billing_report_writer = BillingReportWriter(last_export, html_path, queries_path=Path(course_types).parent)
+        billing_report_writer.add_billing_info_as_sheets(
+            reports.billing_report.query("`Наименование образовательной цифровой площадки` == 'Новый Диск'")
+        )
+        billing_report_writer.set_name("billing_report_new_disk")
+        billing_report_writer.save_report()
+
+        billing_report_writer = BillingReportWriter(last_export, html_path, queries_path=Path(course_types).parent)
+        billing_report_writer.add_billing_info_as_sheets(
+            reports.billing_report.query("`Наименование образовательной цифровой площадки` == 'Фоксфорд'")
+        )
+        billing_report_writer.set_name("billing_report_foxford")
         billing_report_writer.save_report()
 
         region_report_writer = RegionReportWriter(last_export, html_path, queries_path=Path(course_types).parent)

@@ -27,5 +27,10 @@ data.to_sql(
         "updated_at": Date
     }
 )
+
+#%%
+conn = engine.raw_connection()
+# conn.cursor().execute("ALTER TABLE statistic_types ADD PRIMARY KEY (id);")
+conn.cursor().execute("ALTER TABLE statistic_types ADD UNIQUE(type_name);")
 #%%
 conn.commit()

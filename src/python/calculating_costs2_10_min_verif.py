@@ -294,6 +294,7 @@ class SharedModel:
 
         special_status_records = []
         for ind, row in approved_status.iterrows():
+            if row["ИНН"] in approved_in_november: continue
             rec = {
                 "inn": row["ИНН"],
                 "special_status": row["Статус письма"]
@@ -302,7 +303,7 @@ class SharedModel:
                 rec["special_status"] = activated_in_november_status
             special_status_records.append(rec)
 
-        for school in approved_in_november - set(approved_status["ИНН"]):
+        for school in approved_in_november:  # - set(approved_status["ИНН"]):
             rec = {
                 "inn": school,
                 "special_status": activated_in_november_status
@@ -480,16 +481,11 @@ class SharedModel:
     def preprocess_chunk(self, chunk: pd.DataFrame, path, error_buffer, drop_duplicates=False):
         path = Path(path)
         self.map_course_statistics_columns(chunk)
-        column_order = ["profile_id", "educational_course_id", "created_at"]
+        column_order = ["profile_id", "educational_course_id", "date", "start_time", "end_time", "dt"]
         chunk = chunk[column_order]
         # chunk.dropna(axis=0, inplace=True)
         for col in column_order:
             self.check_for_nas(chunk, col, path, error_buffer=error_buffer)
-            # chunk = chunk[~chunk[col].isnull()]
-        chunk.eval("created_at_original = created_at", inplace=True)
-        chunk.eval("created_at = created_at.dt.normalize()", inplace=True)
-        # chunk["created_at_original"] = chunk["created_at"]
-        # chunk["created_at"] = chunk["created_at"].dt.normalize()
         self.convert_ids_to_int(chunk, ["profile_id", "educational_course_id"], add_new=False)
         chunk.eval( # this lookup can fail only if convert_ids_to_int fails
             "educational_course_id = educational_course_id.map(@resolve_id)",
@@ -511,32 +507,38 @@ class SharedModel:
         pass
 
     def filter_statistics_files(self, files):
-        return filter(lambda filename: filename.endswith(".csv") and not filename.startswith("."), files)
+        return filter(lambda filename: filename.endswith("___preprocessed.tsv") and not filename.startswith("."), files)
 
-    def load_course_statistics(self, path, date_field="created_at", **kwargs):
+    def load_course_statistics_file(self, path, date_field="created_at", **kwargs):
         self.prepare_statistics_table()
-        target_table = "course_statistics" if self.minute_activity is False else "course_statistics_pre"
+        target_table = "course_statistics_pre"
         filename = os.path.basename(path)
         if filename not in self.processed_files:
             error_buffer = {}
             for ind, chunk in enumerate(pd.read_csv(
-                    path, chunksize=self.statistics_import_chunk_size, parse_dates=[date_field], **kwargs
+                    path,
+                    chunksize=self.statistics_import_chunk_size,
+                    parse_dates=["date", "start_time", "end_time"],
+                    sep="\t", header=None,
+                    names=["profile_id", "educational_course_id", "date", "start_time", "end_time", "dt"],
+                    dtype={"educational_course_id": "string"},
+                    **kwargs
             )):
                 self.db.add_records(
                     self.preprocess_chunk(chunk, path, error_buffer, drop_duplicates=not self.minute_activity),
                     target_table,
-                    # dtype={
-                    #     "profile_id": "INT NOT NULL",
-                    #     "educational_course_id": "INT NOT NULL",
-                    #     "created_at": "TIMESTAMP NOT NULL",
-                    #     "created_at_original": "TIMESTAMP NOT NULL"
-                    # }
                 )
             for error_file, content in error_buffer.items():
                 content.to_csv(error_file, index=False, sep="\t")
             self.processed_files.append(filename)
             self.has_new_data = True
             self.save_state()
+
+    def load_course_statistics(self, path, date_field=None, dtype=None):
+        files = sorted(os.listdir(path))
+        files = self.filter_statistics_files(files)
+        for file in files:
+            self.load_course_statistics_file(os.path.join(path, file))
 
     def entry_valid(self, profile_id, statistic_type_id, educational_course_id, created_at):
         profile_id = profile_id  # entry["profile_id"]
@@ -579,7 +581,7 @@ class SharedModel:
 
     def get_freeze_date_filtration_rule(self):
         if self.freeze_date is not None:
-            return f"WHERE course_statistics.created_at < '{self.freeze_date}'"
+            return f"WHERE course_statistics.date < '{self.freeze_date}'"
         else:
             return ""
 
@@ -602,32 +604,35 @@ class SharedModel:
 
         if self.has_new_data:
             self.db.drop_table("course_statistics")
-            chunks = self.db.query(
+            self.db.execute(
                 """
-                SELECT 
-                profile_id, educational_course_id, CAST(created_at AS TIMESTAMP), 
-                CAST(min(created_at_original) AS TIMESTAMP) as day_start, CAST(max(created_at_original) AS TIMESTAMP) as day_end  
+                CREATE TABLE course_statistics AS
+                SELECT
+                profile_id, educational_course_id, date, 
+                sum(dt) as active_time,
+                sum(dt) > 600 as is_active
                 FROM 
                 course_statistics_pre
-                GROUP BY profile_id, educational_course_id, created_at
-                """, chunksize=self.statistics_import_chunk_size
+                GROUP BY
+                profile_id, educational_course_id, date
+                """,
             )
 
-            for chunk in chunks:
-                chunk["is_active"] = (
-                        pd.to_datetime(chunk["day_end"]) - pd.to_datetime(chunk["day_start"])
-                ).map(lambda x: x.seconds / seconds_in_minute > minimum_active_minutes)
-                self.db.add_records(
-                    chunk, "course_statistics",
-                    dtype={
-                        "profile_id": "INT NOT NULL",
-                        "educational_course_id": "INT NOT NULL",
-                        "created_at": "TIMESTAMP NOT NULL",
-                        "day_start": "TIMESTAMP NOT NULL",
-                        "day_end": "TIMESTAMP NOT NULL",
-                        "is_active": "INT NOT NULL",
-                    }
-                )
+            # for chunk in chunks:
+            #     chunk["is_active"] = (
+            #             pd.to_datetime(chunk["day_end"]) - pd.to_datetime(chunk["day_start"])
+            #     ).map(lambda x: x.seconds / seconds_in_minute > minimum_active_minutes)
+            #     self.db.add_records(
+            #         chunk, "course_statistics",
+            #         dtype={
+            #             "profile_id": "INT NOT NULL",
+            #             "educational_course_id": "INT NOT NULL",
+            #             "created_at": "TIMESTAMP NOT NULL",
+            #             "day_start": "TIMESTAMP NOT NULL",
+            #             "day_end": "TIMESTAMP NOT NULL",
+            #             "is_active": "INT NOT NULL",
+            #         }
+            #     )
 
     def prepare_for_report(self):
 
@@ -839,7 +844,7 @@ class SharedModel:
         self.sort_course_names(self.courses_report, order=["Название", "Платформа"])
 
     def get_report(self):
-        # self.has_new_data = True
+        self.has_new_data = True
         self.prepare_for_report()
         self.prepare_report()
         self.convergence_stat()
@@ -875,7 +880,7 @@ class SharedModel:
             course_statistics = self.db.query(  # can improve filtration by adding course name to the filter
                 """
                 SELECT 
-                DISTINCT provider, course_name, profile_id_uuid as "profile_id", created_at as "visit_date" 
+                DISTINCT provider, course_name, profile_id_uuid as "profile_id", date as "visit_date" 
                 FROM 
                 course_statistics
                 LEFT JOIN course_information ON course_statistics.educational_course_id = course_information.course_id
@@ -883,7 +888,7 @@ class SharedModel:
                 WHERE course_statistics.profile_id IN (
                     SELECT DISTINCT profile_id FROM billing
                 ) 
-                ORDER BY created_at
+                ORDER BY date
                 """,
                 chunksize=self.statistics_import_chunk_size
             )
@@ -986,12 +991,12 @@ class Course_FoxFord(SharedModel):
             assert parent_id == structure[id_]["parent_id"]
 
     def map_course_statistics_columns(self, data):
-        data.rename({
-            "createdat": "created_at",
-            "profileid": "profile_id",
-            "statisticstypeid": "statistic_type_id",
-            "externalid": "educational_course_id",
-        }, axis=1, inplace=True)
+        # data.rename({
+        #     "createdat": "created_at",
+        #     "profileid": "profile_id",
+        #     "statisticstypeid": "statistic_type_id",
+        #     "externalid": "educational_course_id",
+        # }, axis=1, inplace=True)
         def normalize(id_):
             if pd.isna(id_):
                 return id_
@@ -1004,12 +1009,6 @@ class Course_FoxFord(SharedModel):
         )
         return data
 
-    def load_course_statistics(self, path, date_field=None, dtype=None):
-        files = sorted(os.listdir(path))
-        files = self.filter_statistics_files(files)
-        for file in files:
-            super().load_course_statistics(os.path.join(path, file), "createdat")
-
 
 class Course_MEO(SharedModel):
     def __init__(self, *args, **kwargs):
@@ -1017,48 +1016,19 @@ class Course_MEO(SharedModel):
 
     def format_course_structure_columns(self, data):
         data.rename({"material_id": "educational_course_id"}, axis=1, inplace=True)
-        return data
+        return data.astype({"educational_course_id": "string"})
 
     def map_course_statistics_columns(self, data):
-        data.rename({
-            "Start": "created_at",
-            "profileId": "profile_id",
-            "CourseId": "educational_course_id",
-        }, axis=1, inplace=True)
+        # data.rename({
+        #     "Start": "created_at",
+        #     "profileId": "profile_id",
+        #     "CourseId": "educational_course_id",
+        # }, axis=1, inplace=True)
+        # data.astype({"educational_course_id": "int32"}, inplace=True)
         return data
-
-    def load_course_statistics(self, path, date_field=None, dtype=None):
-        files = sorted(os.listdir(path))
-        files = self.filter_statistics_files(files)
-        for file in files:
-            super().load_course_statistics(os.path.join(path, file), "Start", sep="|", dtype={"CourseId": "string"})
 
     def resolve_structure(self, data):
         return data
-
-    def load_course_structure(self, path):
-        if self.has_new_data:
-            data = self.format_course_structure_columns(pd.read_csv(path, dtype={"material_id": "string"}))
-            if "is_deleted" in data.columns:
-                self.normalize_is_deleted_field(data)
-            else:
-                data["is_deleted"] = False
-            data = self.resolve_structure(data)
-            data = self.prepare_course_ids(data, path)
-            self.db.replace_records(
-                data[[
-                    "educational_course_id", "educational_course_id_uuid",
-                    "course_name", "provider", "course_id", "is_deleted"]],
-                "course_information",
-                dtype={
-                    "educational_course_id": "INT PRIMARY KEY",
-                    "educational_course_id_uuid": "TEXT UNIQUE NOT NULL",
-                    "course_name": "TEXT NOT NULL",
-                    "provider": "TEXT NOT NULL",
-                    "course_id": "INT NOT NULL",
-                    "is_deleted": "INT NOT NULL"
-                }
-            )
 
 
 class Course_Uchi(SharedModel):
@@ -1089,19 +1059,45 @@ class Course_Uchi(SharedModel):
         return data  # lesson chapter topic course
 
     def map_course_statistics_columns(self, data):
-        data.rename({
-            "createdAt": "created_at",
-            "statisticsTypeId": "statistic_type_id",
-            "userId": "profile_id",
-            "externalId": "educational_course_id",
-        }, axis=1, inplace=True)
-        return data[["profile_id", "educational_course_id", "created_at"]]
+        pass
+        # data.rename({
+        #     "createdAt": "created_at",
+        #     "statisticsTypeId": "statistic_type_id",
+        #     "userId": "profile_id",
+        #     "externalId": "educational_course_id",
+        # }, axis=1, inplace=True)
+        # return data[["profile_id", "educational_course_id", "created_at"]]
 
-    def load_course_statistics(self, path, date_field=None, dtype=None):
-        files = sorted(os.listdir(path))
-        files = self.filter_statistics_files(files)
-        for file in files:
-            super().load_course_statistics(os.path.join(path, file), "createdAt", dtype={"externalId": "string"})  #, sep="\t")
+    def load_course_statistics(self, path, date_field="created_at", **kwargs):
+        self.prepare_statistics_table()
+        filename = os.path.basename(path)
+        data = pd.read_csv(
+                    path,
+                    parse_dates=["date"],
+                    sep=",", header=0,
+                    names=["externalUserId","subject_id","primary_sec","nm_day","date","active_time","profile_id","educational_course_id"],
+                    usecols=["profile_id", "educational_course_id", "date","active_time"],
+                    dtype={"educational_course_id": "string"},
+                    **kwargs
+            )
+
+        data["provider_course_name"] = data["educational_course_id"].apply(lambda x: "Учи.Ру" + x)
+
+        self.convert_ids_to_int(data, ["profile_id", "provider_course_name"], add_new=False)
+
+        data["educational_course_id"] = data["provider_course_name"]
+
+        data["is_active"] = data["active_time"].apply(lambda x: x > 600)
+        for col in data.columns:
+            self.check_for_nas(data, col, path)
+
+        self.db.add_records(
+            data[["profile_id", "educational_course_id", "date", "active_time", "is_active"]],
+            "course_statistics"
+        )
+
+    def compute_active_days(self, minimum_active_minutes=10.0):
+        pass
 
 
 class ReportWriter:
@@ -1482,14 +1478,14 @@ def process_statistics(
         #     freeze_date=freeze_date, educational_institution=educational_institution_path, minute_activity=minute_activity,
         #     profiles = profiles_path
         # ),
-        Course_MEO(
-            billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
-            external_system=external_system, profile_educational_institution=profile_educational_institution,
-            course_structure=course_structure_meo, course_types=course_types,
-            course_statistics=course_statistics_meo, last_export=last_export, resources_path=resources_path,
-            freeze_date=freeze_date, educational_institution=educational_institution_path, minute_activity=minute_activity,
-            profiles=profiles_path
-        ),
+        # Course_MEO(
+        #     billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
+        #     external_system=external_system, profile_educational_institution=profile_educational_institution,
+        #     course_structure=course_structure_meo, course_types=course_types,
+        #     course_statistics=course_statistics_meo, last_export=last_export, resources_path=resources_path,
+        #     freeze_date=freeze_date, educational_institution=educational_institution_path, minute_activity=minute_activity,
+        #     profiles=profiles_path
+        # ),
         Course_Uchi(
             billing_info=billing, student_grades=student_grades, statistics_type=statistics_type,
             external_system=external_system, profile_educational_institution=profile_educational_institution,
