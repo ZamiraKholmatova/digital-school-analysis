@@ -131,3 +131,23 @@ COPY (
     GROUP BY date_activated
     ORDER BY date_activated
 ) TO '/tmp/export_34625/Прирост_учеников_и_учителей.csv' DELIMITER ',' CSV HEADER;
+
+
+COPY (
+    SELECT
+    profile.full_name as "ФИО",
+    profile.email as "Email",
+    region.region_name as "Регион",
+    ei.short_name as "Школа",
+    CASE WHEN pei.approved_status = 'APPROVED' THEN 'подтвержден'
+        WHEN pei.approved_status = 'NONE' THEN 'в процессе'
+        WHEN pei.approved_status = 'NOT_APPROVED'
+        THEN 'отклонен' END AS "Статус"
+    FROM profile_educational_institution as pei
+    LEFT JOIN profile ON profile.id = pei.profile_id
+    LEFT JOIN educational_institution as ei ON ei.id = pei.educational_institution_id
+    LEFT JOIN locality  ON (ei.locality_id = locality.id)
+    LEFT JOIN municipal_area  ON (locality.municipal_area_id = municipal_area.id)
+    LEFT JOIN region  ON (locality.region_id = region.id OR municipal_area.region_id = region.id)
+    WHERE pei.role = 'TEACHER'
+) TO '/tmp/export_34625/teachers_14_12.csv' DELIMITER ',' CSV HEADER;
