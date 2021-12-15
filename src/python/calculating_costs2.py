@@ -33,6 +33,10 @@ Reports = namedtuple(
 )
 
 
+def get_file_version(path: Path):
+    return int(path.stat().st_mtime)
+
+
 class SQLTable:
     def __init__(self, filename):
         self.conn = sqlite3.connect(filename)
