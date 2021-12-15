@@ -3,4 +3,6 @@ cd /root/export &&
 cat epi.sql | docker exec -i db psql -U postgres -d rco_auth_profile &&
 cat eci.sql | docker exec -i db psql -U postgres -d stat_service &&
 docker cp db:/tmp/export_34625/. /root/export/exported &&
-echo "$(date +%Y-%m-%d_%H-%M-%S)" > /root/export/last_export
+echo "$(date +%Y-%m-%d_%H-%M-%S)" > /root/export/exported/last_export
+
+#for file in db_data_copy/*.csv; do echo Compressing $file; bzip2 $file; done
