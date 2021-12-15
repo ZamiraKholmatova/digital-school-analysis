@@ -4,7 +4,7 @@ COPY (
 ) TO '/tmp/export_34625/educational_courses_only_courses_16.11.csv' DELIMITER ',' CSV HEADER;
 
 -- all courses
-COPY educational_courses(id,deleted,course_type_id,parent_id,external_link,external_id,external_parent_id,course_name,system_code)  TO '/tmp/export_34625/educational_courses_16.11.csv' DELIMITER ',' CSV HEADER;
+--COPY educational_courses(id,deleted,course_type_id,parent_id,external_link,external_id,external_parent_id,course_name,system_code)  TO '/tmp/export_34625/educational_courses_16.11.csv' DELIMITER ',' CSV HEADER;
 
 -- course types (topic, subject, etc.)
 COPY educational_course_type(id, type_name)  TO '/tmp/export_34625/educational_course_type_16.11.csv' DELIMITER ',' CSV HEADER;
