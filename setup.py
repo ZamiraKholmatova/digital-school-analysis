@@ -6,6 +6,8 @@ requirements = [
     # "matplotlib",
     # "statmodels",
     "tqdm",
+    "numpy_ext",
+    "xlsxwriter"
     # "sqlalchemy"
 ]
 

@@ -6,10 +6,11 @@ class DBKVStore:
         self.table_name = table_name
         self.key_column_name = key_column_name
         self.value_column_name = value_column_name
+        self.auto_commit = auto_commit
         self.conn = db_conn
         self.cur = self.conn.cursor()
         self.cur.execute(
-            f"create table {self.table_name} ({self.key_column_name} {key_type} PRIMARY KEY, "
+            f"create table if not exists {self.table_name} ({self.key_column_name} {key_type} PRIMARY KEY, "
             f"{self.value_column_name} {value_type})"
         )
 
@@ -23,8 +24,8 @@ class DBKVStore:
 
     def __getitem__(self, item):
         result = self.cur.execute(
-            f"SELECT {self.value_column_name} FROM {self.table_name} where {self.value_column_name} = ?", (item, )
-        )
+            f"SELECT {self.value_column_name} FROM {self.table_name} where {self.key_column_name} = ?", (item, )
+        ).fetchmany(1)
         if len(result) == 0:
             raise KeyError(f"Key {item} not in table")
 
