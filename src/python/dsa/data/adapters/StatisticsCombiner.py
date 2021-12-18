@@ -241,6 +241,11 @@ def map_partitions_1c_nd(file):
 
 def preprocess(files, partition_fn):
 
+    files = list(files)
+
+    if len(files) == 0:
+        return
+
     with Pool(4) as p:
         p.map(partition_fn, files)
 

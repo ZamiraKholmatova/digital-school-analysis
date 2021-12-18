@@ -1,3 +1,4 @@
+import logging
 from math import isnan
 from pathlib import Path
 
@@ -26,6 +27,7 @@ class DataAdapter:
 
     @staticmethod
     def get_course_statistics_path(args):
+        logging.info("Importing course statistics")
         return Path(args.course_statistics)
 
     def set_preprocessed_path(self, args):
@@ -265,7 +267,12 @@ class DataAdapter:
                         self.shared_model.mappings["educational_course_id"].get(id_, pd.NA),
                         pd.NA
                     )
+
+                def encode_profile_id(id_):
+                    return self.shared_model.mappings["profile_id"].get(id_, pd.NA)
+
                 chunk["educational_course_id"] = chunk["educational_course_id"].apply(encode_course_id)
+                chunk["profile_id"] = chunk["profile_id"].apply(encode_profile_id)
                 chunk.dropna(inplace=True)
                 yield chunk
             self.shared_model.save_current_file_version(file)
@@ -286,6 +293,7 @@ class DataAdapter_FoxFord(DataAdapter):
 
     @staticmethod
     def get_course_structure_path(args):
+        logging.info("Importing course statistics for FoxFord")
         return Path(args.course_structure_foxford)
 
     @staticmethod
@@ -349,6 +357,7 @@ class DataAdapter_MEO(DataAdapter):
 
     @staticmethod
     def get_course_structure_path(args):
+        logging.info("Importing course statistics for MEO")
         return Path(args.course_structure_meo)
 
     @staticmethod
@@ -383,6 +392,7 @@ class DataAdapter_Uchi(DataAdapter):
 
     @staticmethod
     def get_course_structure_path(args):
+        logging.info("Importing course statistics UCHI")
         return Path(args.course_structure_uchi)
 
     @staticmethod

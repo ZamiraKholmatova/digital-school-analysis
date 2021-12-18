@@ -1,3 +1,4 @@
+import logging
 from collections import namedtuple
 from pathlib import Path
 
@@ -72,6 +73,7 @@ class SharedModel:
         return mapping
 
     def load_state(self):
+        logging.info("Loading previous state")
         self.load_mappings()
 
     def set_new_data_flag(self, flag_value):
@@ -164,6 +166,7 @@ class SharedModel:
 
     def load_billing_info(self, path):
         if self.is_new_version(path):
+            logging.info("Importing billing info")
             data = self.read_table_dump(path, dtype={"price": "Float32", "approved": "Float32"}) \
                 .rename({"short_name": "provider"}, axis=1)
 
@@ -189,6 +192,7 @@ class SharedModel:
 
     def load_student_grades(self, path):
         if self.is_new_version(path):
+            logging.info("Importing student grades")
             data = self.read_table_dump(path, dtype={"grade": "Int32"}).rename({"id": "profile_id"}, axis=1)
             self.convert_ids_to_int(data, ["profile_id"], add_new=False)
             for field in ["grade", "profile_id"]:
@@ -255,6 +259,7 @@ class SharedModel:
         letter_schools_path = path.parent.joinpath("schools_paper_letters.csv")
 
         if self.is_new_version(path) or self.is_new_version(approved_in_november_path) or self.is_new_version(letter_schools_path):
+            logging.info("Importing educational institutions")
             path = Path(path)
             data = self.read_table_dump(path, dtype={"inn": "Int64"}) \
                 .rename({"id": "educational_institution_id"}, axis=1)
@@ -290,6 +295,7 @@ class SharedModel:
 
     def load_profile_approved_status(self, path):
         if self.is_new_version(path):
+            logging.info("Importing profiles")
             data = self.read_table_dump(path, parse_dates=["updated_at", "approval_date"])
             self.convert_ids_to_int(data, ["profile_id"])
             self.convert_ids_to_int(data, ["educational_institution_id"], add_new=False)
@@ -327,3 +333,18 @@ class SharedModel:
         for adapter in self.adapters:
             for chunk in adapter:
                 self.db.add_records(chunk, "course_statistics_pre")
+
+    def needs_new_report(self):
+        file_versions = self.db.query(f"select version from {self.file_version_table_name} where filename != 'report_version'")
+        report_version = self.version_store.get("report_version", 0)
+        if len(file_versions) == 0:
+            raise Exception("Unknown error")
+        last_file_version = int(file_versions["version"].max())
+        return last_file_version > report_version
+
+    def set_latest_report(self):
+        file_versions = self.db.query(f"select version from {self.file_version_table_name} where filename != 'report_version'")
+        if len(file_versions) == 0:
+            raise Exception("Unknown error")
+        last_file_version = file_versions["version"].max()
+        self.version_store["report_version"] = last_file_version
