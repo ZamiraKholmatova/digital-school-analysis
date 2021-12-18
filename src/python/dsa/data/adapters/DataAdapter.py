@@ -29,7 +29,7 @@ class DataAdapter:
         return Path(args.course_statistics)
 
     def set_preprocessed_path(self, args):
-        self.preprocessed_path = Path(args.course_statistics).joinpath("preprocessed")
+        self.preprocessed_path = Path(self.get_course_statistics_path(args)).joinpath("preprocessed")
 
     def get_raw_statistics_files(self, path):
         return map(Path, filter(
@@ -257,16 +257,18 @@ class DataAdapter:
         for file in self.get_preprocessed_files():
             for chunk in pd.read_csv(
                 file, chunksize=1000000,
-                names=["profile_id", "educational_course_id", "date", "start_time", "end_time", "dt"], header=None
+                names=["profile_id", "educational_course_id", "date", "start_time", "end_time", "dt"], header=None,
+                parse_dates=["date", "start_time", "end_time"], dtype={"educational_course_id": "string"}
             ):
                 def encode_course_id(id_):
                     return self.shared_model.mappings["educational_course_id2course_id"].get(
                         self.shared_model.mappings["educational_course_id"].get(id_, pd.NA),
-                        pd.Na
+                        pd.NA
                     )
                 chunk["educational_course_id"] = chunk["educational_course_id"].apply(encode_course_id)
                 chunk.dropna(inplace=True)
                 yield chunk
+            self.shared_model.save_current_file_version(file)
 
     def __iter__(self):
         return self.iterate_preprocessed()
@@ -381,7 +383,7 @@ class DataAdapter_Uchi(DataAdapter):
 
     @staticmethod
     def get_course_structure_path(args):
-        return Path(args.course_structure)
+        return Path(args.course_structure_uchi)
 
     @staticmethod
     def get_course_statistics_path(args):

@@ -13,6 +13,7 @@ def parse_arguments():
     parser.add_argument("--course_structure", default=None)
     parser.add_argument("--course_structure_foxford", default=None)
     parser.add_argument("--course_structure_meo", default=None)
+    parser.add_argument("--course_structure_uchi", default=None)
     parser.add_argument("--course_types", default=None)
     parser.add_argument("--course_statistics", default=None)
     parser.add_argument("--course_statistics_foxford", default=None)
