@@ -38,6 +38,7 @@ class SharedModel:
         self.load_billing_info(Path(args.billing))
 
         self.prepare_data_adapters(args)
+        self.import_statistics()
 
     @staticmethod
     def get_file_version(path: Path):
@@ -321,3 +322,8 @@ class SharedModel:
             DataAdapter_MEO(shared_model=self, args=args),
             DataAdapter_Uchi(shared_model=self, args=args)
         ]
+
+    def import_statistics(self):
+        for adapter in self.adapters:
+            for chunk in adapter:
+                self.db.add_records(chunk, "course_statistics_pre")

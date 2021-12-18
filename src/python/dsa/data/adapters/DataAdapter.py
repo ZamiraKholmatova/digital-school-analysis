@@ -17,6 +17,7 @@ class DataAdapter:
 
         self.load_course_structure(self.get_course_structure_path(args))
         self.preprocess(self.get_course_statistics_path(args))
+        self.set_preprocessed_path(args)
         # self.load_course_statistics(self.get_course_statistics_path(args))
 
     @staticmethod
@@ -26,6 +27,9 @@ class DataAdapter:
     @staticmethod
     def get_course_statistics_path(args):
         return Path(args.course_statistics)
+
+    def set_preprocessed_path(self, args):
+        self.preprocessed_path = Path(args.course_statistics).joinpath("preprocessed")
 
     def get_raw_statistics_files(self, path):
         return map(Path, filter(
@@ -244,6 +248,29 @@ class DataAdapter:
         assert course_type == "ЦОМ"
         assert isinstance(provider, str)
         assert isinstance(subject_name, str)
+
+    def get_preprocessed_files(self):
+        return (file for file in self.preprocessed_path.iterdir() if file.name.endswith("___preprocessed.csv.bz2"))
+
+    def iterate_preprocessed(self):
+        error_buffer = {}
+        for file in self.get_preprocessed_files():
+            for chunk in pd.read_csv(
+                file, chunksize=1000000,
+                names=["profile_id", "educational_course_id", "date", "start_time", "end_time", "dt"], header=None
+            ):
+                def encode_course_id(id_):
+                    return self.shared_model.mappings["educational_course_id2course_id"].get(
+                        self.shared_model.mappings["educational_course_id"].get(id_, pd.NA),
+                        pd.Na
+                    )
+                chunk["educational_course_id"] = chunk["educational_course_id"].apply(encode_course_id)
+                chunk.dropna(inplace=True)
+                yield chunk
+
+    def __iter__(self):
+        return self.iterate_preprocessed()
+
 
 
 class DataAdapter_United(DataAdapter):
