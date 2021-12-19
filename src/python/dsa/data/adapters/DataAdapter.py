@@ -255,27 +255,27 @@ class DataAdapter:
         return (file for file in self.preprocessed_path.iterdir() if file.name.endswith("___preprocessed.csv.bz2"))
 
     def iterate_preprocessed(self):
-        error_buffer = {}
         for file in self.get_preprocessed_files():
-            for chunk in pd.read_csv(
-                file, chunksize=1000000,
-                names=["profile_id", "educational_course_id", "date", "start_time", "end_time", "dt"], header=None,
-                parse_dates=["date", "start_time", "end_time"], dtype={"educational_course_id": "string"}
-            ):
-                def encode_course_id(id_):
-                    return self.shared_model.mappings["educational_course_id2course_id"].get(
-                        self.shared_model.mappings["educational_course_id"].get(id_, pd.NA),
-                        pd.NA
-                    )
+            if self.shared_model.is_new_version(file):
+                for chunk in pd.read_csv(
+                    file, chunksize=1000000,
+                    names=["profile_id", "educational_course_id", "date", "start_time", "end_time", "dt"], header=None,
+                    parse_dates=["date", "start_time", "end_time"], dtype={"educational_course_id": "string"}
+                ):
+                    def encode_course_id(id_):
+                        return self.shared_model.mappings["educational_course_id2course_id"].get(
+                            self.shared_model.mappings["educational_course_id"].get(id_, pd.NA),
+                            pd.NA
+                        )
 
-                def encode_profile_id(id_):
-                    return self.shared_model.mappings["profile_id"].get(id_, pd.NA)
+                    def encode_profile_id(id_):
+                        return self.shared_model.mappings["profile_id"].get(id_, pd.NA)
 
-                chunk["educational_course_id"] = chunk["educational_course_id"].apply(encode_course_id)
-                chunk["profile_id"] = chunk["profile_id"].apply(encode_profile_id)
-                chunk.dropna(inplace=True)
-                yield chunk
-            self.shared_model.save_current_file_version(file)
+                    chunk["educational_course_id"] = chunk["educational_course_id"].apply(encode_course_id)
+                    chunk["profile_id"] = chunk["profile_id"].apply(encode_profile_id)
+                    chunk.dropna(inplace=True)
+                    yield chunk
+                self.shared_model.save_current_file_version(file)
 
     def __iter__(self):
         return self.iterate_preprocessed()
