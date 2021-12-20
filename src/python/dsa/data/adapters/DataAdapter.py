@@ -89,7 +89,7 @@ class DataAdapter:
         self.shared_model.convert_ids_to_int(data, ["provider_course_name"], add_new=False)
         self.shared_model.check_for_nas(data, "provider_course_name", Path(str(path.absolute()) + f"_{self.__class__.__name__}"))
         data.rename({"provider_course_name": "course_id"}, axis=1, inplace=True)
-        self.shared_model.mappings["educational_course_id2course_id"] = dict(zip(data["educational_course_id"], data["course_id"]))
+        self.shared_model.mappings["educational_course_id2course_id"].update(dict(zip(data["educational_course_id"], data["course_id"])))
 
         return data
 
