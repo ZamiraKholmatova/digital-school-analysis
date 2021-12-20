@@ -57,7 +57,7 @@ class DataAdapter:
     def format_course_structure_columns(self, data):
         data = data.rename({"deleted": "is_deleted"}, axis=1)
         data = data.query(
-            "system_code == '0b37f22e-c46c-4d53-b0e7-8bdaaf51a8d0' or system_code == '3a4b37c1-1f7d-4cb9-b144-e24c708d9c20' or system_code == 'd2735d92-6ad6-49c4-9b36-c3b16cee695d'"
+            "system_code == '0b37f22e-c46c-4d53-b0e7-8bdaaf51a8d0' or system_code == '3a4b37c1-1f7d-4cb9-b144-e24c708d9c20'" # or system_code == 'd2735d92-6ad6-49c4-9b36-c3b16cee695d'"
         )
         return data
 
@@ -104,12 +104,14 @@ class DataAdapter:
             data = data.query("is_deleted == False")
             data = self.resolve_structure(data)
             data = self.prepare_course_ids(data, path)
-            provider = next(iter(data["provider"]))
+            # provider = next(iter(data["provider"]))
+            providers = data["provider"].unique()
 
             try:
+                query_cond = " and ".join(f"provider != '{provider}'" for provider in providers)
                 existing = self.shared_model.db.query(
                     f"""
-                    SELECT * from course_information where provider != '{provider}'
+                    SELECT * from course_information where {query_cond}'
                     """
                 )
             except:
@@ -120,6 +122,9 @@ class DataAdapter:
             else:
                 to_write = existing.append(data)
 
+            if existing is not None:
+                self.shared_model.db.drop_table("course_information_backup")
+                self.shared_model.db.execute("create table course_information_backup as select * from course_information")
             self.shared_model.db.drop_table("course_information")
 
             self.shared_model.db.replace_records(

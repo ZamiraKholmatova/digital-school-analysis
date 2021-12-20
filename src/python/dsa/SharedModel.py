@@ -100,9 +100,14 @@ class SharedModel:
 
     @staticmethod
     def add_missing_to_mapping(ids, mapping):
+        if len(mapping.values()) == 0:
+            valid_key = 0
+        else:
+            valid_key = max(mapping.values()) + 1
         for id_ in ids:
             if id_ not in mapping:
-                mapping[id_] = len(mapping)
+                mapping[id_] = valid_key
+                valid_key += 1
 
     def convert_ids_to_int(self, table, columns, add_new=True):
         for column in columns:
