@@ -111,7 +111,7 @@ class DataAdapter:
                 query_cond = " and ".join(f"provider != '{provider}'" for provider in providers)
                 existing = self.shared_model.db.query(
                     f"""
-                    SELECT * from course_information where {query_cond}'
+                    SELECT * from course_information where {query_cond}
                     """
                 )
             except:
