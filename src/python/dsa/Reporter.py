@@ -41,7 +41,8 @@ class Reporter:
         return self.shared_model.db
 
     def get_filtration_rules(self):
-        filtration_rules = "WHERE profile_approved_status.role = 'STUDENT' AND approved_status != 'NOT_APPROVED'"
+        filtration_rules = "WHERE approved_status != 'NOT_APPROVED'"
+        # filtration_rules = "WHERE profile_approved_status.role = 'STUDENT' AND approved_status != 'NOT_APPROVED'"
         return filtration_rules
 
     def get_freeze_date_filtration_rule(self):
