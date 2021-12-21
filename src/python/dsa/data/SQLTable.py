@@ -9,11 +9,11 @@ class SQLTable:
         self.path = filename
 
     def replace_records(self, table, table_name, **kwargs):
-        table.to_sql(table_name, con=self.conn, if_exists='replace', index=False, methods="multi", **kwargs)
+        table.to_sql(table_name, con=self.conn, if_exists='replace', index=False, method="multi", chunksize=1000, **kwargs)
         self.create_index_for_table(table, table_name)
 
     def add_records(self, table, table_name, **kwargs):
-        table.to_sql(table_name, con=self.conn, if_exists='append', index=False, methods="multi", **kwargs)
+        table.to_sql(table_name, con=self.conn, if_exists='append', index=False, method="multi", chunksize=1000, **kwargs)
         self.create_index_for_table(table, table_name)
 
     def create_index_for_table(self, table, table_name):
