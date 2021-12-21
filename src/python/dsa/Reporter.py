@@ -181,6 +181,7 @@ class Reporter:
                     SELECT
                     platform, profile_id, max(active_days) as "active_days"
                     FROM full_report
+                    WHERE role = 'STUDENT'
                     GROUP BY platform, profile_id
                 )
                 GROUP BY platform
@@ -230,6 +231,7 @@ class Reporter:
                             ) THEN profile_id ELSE NULL END) AS INTEGER) as "Активных и подтверждённых пользователей (ЕСИА)"
                 FROM
                 full_report
+                WHERE role = 'STUDENT'
                 GROUP BY
                 platform
                 """
@@ -259,17 +261,18 @@ class Reporter:
                     platform as "Платформа",
                     course_name as "Название",
                     CAST(COUNT(DISTINCT profile_id) AS INTEGER) as "Всего",
-                    CAST(COUNT(CASE WHEN active_days >=5 AND approved_status == 'APPROVED' AND 
+                    CAST(COUNT(DISTINCT CASE WHEN active_days >=5 AND approved_status == 'APPROVED' AND 
                             (
                                 special_status == 'Получено адресатом' OR special_status == 'Активировали в ноябре'
-                            ) THEN 1 ELSE NULL END) AS INTEGER) AS "Активные Подтверждённые",
-                    CAST(COUNT(CASE WHEN active_days >=5 AND approved_status == 'APPROVED' AND 
+                            ) THEN profile_id ELSE NULL END) AS INTEGER) AS "Активные Подтверждённые",
+                    CAST(COUNT(DISTINCT CASE WHEN active_days >=5 AND approved_status == 'APPROVED' AND 
                             (
                                 special_status == 'Активировали в ноябре'
-                            ) THEN 1 ELSE NULL END) AS INTEGER) AS "Активные Подтверждённые (ЕСИА)",
-                    CAST(COUNT(CASE WHEN active_days >=5 THEN 1 ELSE NULL END) AS INTEGER) AS "Активные Всего"
+                            ) THEN profile_id ELSE NULL END) AS INTEGER) AS "Активные Подтверждённые (ЕСИА)",
+                    CAST(COUNT(DISTINCT CASE WHEN active_days >=5 THEN profile_id ELSE NULL END) AS INTEGER) AS "Активные Всего"
                     FROM
                     full_report
+                    WHERE role = 'STUDENT'
                     GROUP BY
                     platform, course_name
                 ) AS usage 
@@ -307,15 +310,18 @@ class Reporter:
                 COUNT(DISTINCT CASE WHEN role = 'TEACHER' THEN profile_id ELSE NULL END) AS "Всего преподавателей",
                 COUNT(DISTINCT CASE WHEN role = 'TEACHER' AND approved_status = 'APPROVED' THEN profile_id ELSE NULL END) AS "Подтверждённых преподавателей",
                 COUNT(DISTINCT CASE WHEN role = 'TEACHER' AND approved_status = 'NOT_APPROVED' THEN profile_id ELSE NULL END) AS "Отклонённых преподавателей"
-                FROM (
+                FROM
+                region_info
+                LEFT JOIN (
                     SELECT
                     profile_id_uuid, max(active_days) as active_days
-                    FROM 
+                    FROM
                     full_report
                     GROUP BY profile_id
                 ) as active_people
-                JOIN region_info on active_people.profile_id_uuid = region_info.profile_id
+                ON active_people.profile_id_uuid = region_info.profile_id
                 GROUP BY Регион, Школа, ИНН, Адрес
+                ORDER BY "Всего подтверждённых учеников" DESC
                 """
             )
 
@@ -370,7 +376,7 @@ class Reporter:
                 CREATE TABLE billing AS
                 SELECT platform, course_name, profile_id, profile_id_uuid, special_status
                 FROM full_report
-                WHERE approved_status = 'APPROVED' and special_status = 'Активировали в ноябре'
+                WHERE approved_status = 'APPROVED' and special_status = 'Активировали в ноябре' and role = 'STUDENT'
                 AND special_status NOT NULL 
                 AND active_days >= {num_days_to_be_considered_active}
                 """

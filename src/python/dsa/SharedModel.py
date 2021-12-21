@@ -351,5 +351,5 @@ class SharedModel:
         file_versions = self.db.query(f"select version from {self.file_version_table_name} where filename != 'report_version'")
         if len(file_versions) == 0:
             raise Exception("Unknown error")
-        last_file_version = file_versions["version"].max()
+        last_file_version = int(file_versions["version"].max())
         self.version_store["report_version"] = last_file_version
