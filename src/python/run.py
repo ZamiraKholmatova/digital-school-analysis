@@ -4,7 +4,7 @@ from pathlib import Path
 
 from dsa import SharedModel
 from dsa.writers import ReportWriter, BillingReportWriter, RegionReportWriter, SchoolActivityReportWriter
-from src.python.dsa import Reporter
+from dsa import Reporter
 
 
 def get_last_export(path):
