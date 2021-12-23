@@ -335,9 +335,15 @@ class SharedModel:
         ]
 
     def import_statistics(self):
+        self.db.drop_table("course_statistics")
         for adapter in self.adapters:
-            for chunk in adapter:
-                self.db.add_records(chunk, "course_statistics_pre")
+            ad = self.db.query(f"SELECT * FROM {adapter.get_statistics_table_name()}", chunksize=1000000)
+            for chunk in ad:
+                self.db.add_records(chunk, "course_statistics")
+
+
+            # for chunk in adapter:
+            #     self.db.add_records(chunk, "course_statistics_pre")
 
     def needs_new_report(self):
         file_versions = self.db.query(f"select version from {self.file_version_table_name} where filename != 'report_version'")

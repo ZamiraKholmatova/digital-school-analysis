@@ -33,7 +33,7 @@ class Reporter:
 
         self.has_new_data = self.shared_model.needs_new_report()
 
-        self.compute_active_days()
+        # self.compute_active_days()
 
 
     @property
@@ -51,31 +51,31 @@ class Reporter:
         else:
             return ""
 
-    def compute_active_days(self, minimum_active_minutes=10.0):
-        seconds_in_minute = 60
-
-        if self.has_new_data:
-            logging.info("Computing active days")
-            self.db.drop_table("course_statistics")
-            self.db.execute(
-                """
-                CREATE TABLE course_statistics AS
-                SELECT
-                profile_id, educational_course_id, date, 
-                sum(dt) as active_time,
-                sum(dt) >= 600 as is_active
-                FROM 
-                course_statistics_pre
-                GROUP BY
-                profile_id, educational_course_id, date
-                """,
-            )
+    # def compute_active_days(self, minimum_active_minutes=10.0):
+    #     seconds_in_minute = 60
+    #
+    #     if self.has_new_data:
+    #         logging.info("Computing active days")
+    #         self.db.drop_table("course_statistics")
+    #         self.db.execute(
+    #             """
+    #             CREATE TABLE course_statistics AS
+    #             SELECT
+    #             profile_id, educational_course_id, date,
+    #             sum(dt) as active_time,
+    #             sum(dt) >= 600 as is_active
+    #             FROM
+    #             course_statistics_pre
+    #             GROUP BY
+    #             profile_id, educational_course_id, date
+    #             """,
+    #         )
 
     def prepare_for_report(self):
 
         if self.has_new_data:
             logging.info("Computing full report")
-            for table_name in ["active_days_count", "full_report"]:
+            for table_name in ["full_report", "active_days_count"]:
                 self.db.drop_table(table_name)
 
             self.db.execute(
@@ -84,7 +84,7 @@ class Reporter:
                 SELECT
                 educational_course_id, profile_id,
                 CAST(COUNT(CASE WHEN is_active = true THEN 1 ELSE NULL END) AS INTEGER) AS "active_days"
-                FROM 
+                FROM
                 course_statistics
                 {self.get_freeze_date_filtration_rule()}
                 GROUP BY educational_course_id, profile_id
