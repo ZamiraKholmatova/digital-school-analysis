@@ -1,8 +1,8 @@
 -- this table contains all users and should be used as a reference
 -- flag is deleted should be checked
-COPY (
-    SELECT id as "profile_id", is_deleted FROM profile
-) TO '/tmp/export_34625/profiles_16.11.csv' DELIMITER ',' CSV HEADER;
+--COPY (
+--    SELECT id as "profile_id", is_deleted FROM profile
+--) TO '/tmp/export_34625/profiles_16.11.csv' DELIMITER ',' CSV HEADER;
 
 -- profile role has more records than profile, is this normal?
 -- flag is deleted should be checked
@@ -137,9 +137,10 @@ COPY (
     SELECT
     profile.full_name as "ФИО",
     profile.email as "Email",
+    profile.phone as "Телефон",
     region.region_name as "Регион",
     ei.short_name as "Школа",
-    CASE WHEN pei.approved_status = 'APPROVED' THEN 'подтвержден'
+    CASE WHEN pei.approved_status = 'APPROVED' THEN 'подтверждён'
         WHEN pei.approved_status = 'NONE' THEN 'в процессе'
         WHEN pei.approved_status = 'NOT_APPROVED'
         THEN 'отклонен' END AS "Статус"
@@ -151,3 +152,24 @@ COPY (
     LEFT JOIN region  ON (locality.region_id = region.id OR municipal_area.region_id = region.id)
     WHERE pei.role = 'TEACHER'
 ) TO '/tmp/export_34625/teachers_14_12.csv' DELIMITER ',' CSV HEADER;
+
+
+COPY (
+    WITH started_approving as (SELECT DISTINCT confirmator_id as approving from profile_educational_confirmation_log)
+    SELECT
+    eins.region AS "Регион",
+    eins.short_name AS "Школа",
+    eins.inn AS "ИНН",
+    eins.address AS "Адрес",
+    profile.full_name as "Имя",
+    profile.phone as "Телефон",
+    CASE WHEN scos_response.approve_status = 'SCOS' or scos_response.approve_status = 'MANUAL' THEN 1 ELSE NULL END as "Подтвержден",
+    CASE WHEN started_approving.approving IS NOT NULL THEN 1 ELSE NULL END as "Начали подтверждать"
+    FROM
+    profile
+    LEFT JOIN profile_educational_institution AS pei ON pei.profile_id = profile.id
+    LEFT JOIN educational_institution AS eins ON pei.educational_institution_id = eins.id
+    LEFT JOIN scos_response ON profile.id = scos_response.profile_id
+    LEFT JOIN started_approving ON profile.id = started_approving.approving
+    where pei.role = 'INSTITUTE'
+) TO '/tmp/export_34625/director_approving.csv' DELIMITER ',' CSV HEADER;
