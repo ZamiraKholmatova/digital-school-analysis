@@ -2,11 +2,9 @@ from collections import namedtuple
 from multiprocessing import Pool
 from pathlib import Path
 
-import numpy as np
 from tqdm import tqdm
 
 import pandas as pd
-from numpy_ext import rolling_apply
 
 
 Record = namedtuple("Record", ["profile_id", "educational_course_id", "date", "day_start", "day_end"])
@@ -34,7 +32,7 @@ class StatisticsCombiner:
         )
 
     def get_dump_path(self, path):
-        preprocessed_folder = path.parent.joinpath("preprocessed")
+        preprocessed_folder = path.parent.joinpath("preprocessed3d")
         if not preprocessed_folder.is_dir():
             preprocessed_folder.mkdir()
         filename = path.name
@@ -51,28 +49,7 @@ class StatisticsCombiner:
         if dump_filename.is_file():
             return
 
-        def get_border_time(profile_id, educational_course_id, created_at):
-            if profile_id[0] != profile_id[1] or \
-                    educational_course_id[0] != educational_course_id[1] or \
-                    np.abs(created_at[1] - created_at[0]) > np.timedelta64(45, 'm'):
-                return created_at[1]
-
-        def get_start_time(profile_id, educational_course_id, time):
-            if profile_id[0] == profile_id[1] and \
-                    educational_course_id[0] == educational_course_id[1]:
-                if np.isnan(time[1]):
-                    return time[0]
-                else:  # this situation can occur only when current row has duration 0
-                    if np.abs(time[1] - time[0]) < np.timedelta64(45, 'm') and self.check_45_min:
-                        return time[0]
-
-        def get_end_time(profile_id, educational_course_id, time):
-            if profile_id[0] == profile_id[1] and \
-                    educational_course_id[0] == educational_course_id[1]:
-                return time[1]
-
         col_order = ["profile_id", "educational_course_id", "created_at"]
-        cols_to_write = ["profile_id", "educational_course_id", "date", "start_time", "end_time", "dt"]
 
         print(partition_file)
 
@@ -81,40 +58,10 @@ class StatisticsCombiner:
             chunk["educational_course_id"] = chunk["educational_course_id"].apply(self.preprocess_course_id)
             chunk.sort_values(by=col_order, inplace=True)
 
-            backup = chunk.copy()
+            chunk["created_at"] = chunk["created_at"].dt.normalize()
+            chunk.drop_duplicates(col_order, inplace=True)
 
-            reversed_chunk = chunk[::-1]
-
-            chunk["start_time_"] = rolling_apply(
-                get_border_time, 2, chunk["profile_id"].values,
-                chunk["educational_course_id"].values, chunk["created_at"].values
-            )
-            chunk["end_time_"] = np.flip(rolling_apply(
-                get_border_time, 2, reversed_chunk["profile_id"].values,
-                reversed_chunk["educational_course_id"].values, reversed_chunk["created_at"].values
-            ))
-
-            chunk.dropna(subset=["start_time_", "end_time_"], how="all", inplace=True)
-
-            chunk["start_time"] = rolling_apply(
-                get_start_time, 2,
-                chunk["profile_id"].values,
-                chunk["educational_course_id"].values,
-                chunk["start_time_"].values
-            )
-
-            chunk["end_time"] = rolling_apply(
-                get_end_time, 2,
-                chunk["profile_id"].values,
-                chunk["educational_course_id"].values,
-                chunk["end_time_"].values
-            )
-
-            chunk.dropna(subset=["start_time", "end_time"], inplace=True)
-            chunk["date"] = chunk["created_at"].apply(lambda x: str(x).split(" ")[0])
-            chunk["dt"] = (chunk["end_time"] - chunk["start_time"]).map(lambda x: x.seconds)
-
-            self.append_to_dump_file(dump_filename, chunk[cols_to_write])
+            self.append_to_dump_file(dump_filename, chunk[col_order])
 
 
 class StatisticsCombiner_Uchi(StatisticsCombiner):
@@ -155,11 +102,11 @@ class StatisticsCombiner_MEO(StatisticsCombiner):
             partition_file,
             header=0,
             names=[
-                "profile_id", "educational_course_id", "date", "dt"
+                "profile_id", "educational_course_id", "created_at", "dt"
             ],
             sep=";",
-            usecols=["profile_id", "educational_course_id", "date", "dt"],
-            parse_dates=["date"],
+            usecols=["profile_id", "educational_course_id", "created_at", "dt"],
+            parse_dates=["created_at"], dayfirst=True,
             dtype={"educational_course_id": "string"},
             chunksize=3000000
         )
@@ -177,29 +124,6 @@ class StatisticsCombiner_MEO(StatisticsCombiner):
     #         dtype={"educational_course_id": "string"},
     #         chunksize=3000000
     #     )
-
-    def map_partition(self, partition_file):
-
-        dump_filename = self.get_dump_path(partition_file)
-
-        if dump_filename.is_file():
-            return
-
-        cols_to_write = ["profile_id", "educational_course_id", "date", "start_time", "end_time", "dt"]
-
-        print(partition_file)
-
-        for chunk in tqdm(self.read_partition_chunks(partition_file)):
-            # chunk.dropna(subset=["profile_id", "educational_course_id", "start_time", "end_time"], inplace=True)
-            # chunk["date"] = chunk["start_time"].apply(lambda x: str(x).split(" ")[0])
-            # chunk["dt"] = (chunk["end_time"] - chunk["start_time"]).map(lambda x: x.seconds)
-
-            chunk.dropna(subset=["profile_id", "educational_course_id", "date", "dt"], inplace=True)
-            chunk["start_time"] = chunk["date"]
-            chunk["end_time"] = chunk["date"]
-            chunk["dt"] = chunk["dt"].apply(lambda x: pd.to_timedelta(x+":00").seconds)
-
-            self.append_to_dump_file(dump_filename, chunk[cols_to_write])
 
 
 class StatisticsCombiner_1C_ND(StatisticsCombiner):

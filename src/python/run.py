@@ -62,43 +62,43 @@ def main():
                 table, {"long_column": 1}
             )
 
-        report_writer.add_sheet("Статистика активности", reports.convergence_report)
-        report_writer.add_sheet(
-            "Активно и подтвержд. по школам", reports.school_active_students_report, {"long_column": 1}
-        )
-
-        report_writer.add_sheet(
-            "Активно и подтвержд. по рег.", reports.region_active_students_report, {"long_column": 1}
-        )
-
-        # report_writer.add_extra_sheets()
-
-        report_writer.save_report()
-
-        # common_billing_report_writer = CommonBillingReportWriter(last_export, html_path, queries_path=Path(course_types).parent)
-        # common_billing_report_writer.add_sheet(
-        #     "ЦОК",
-        #     reports.billing_report.query("`Наименование образовательной цифровой площадки` != 'Учи.Ру'")
+        # report_writer.add_sheet("Статистика активности", reports.convergence_report)
+        # report_writer.add_sheet(
+        #     "Активно и подтвержд. по школам", reports.school_active_students_report, {"long_column": 1}
         # )
-        # common_billing_report_writer.save_report()
 
-        for platform in reports.billing_report["Наименование образовательной цифровой площадки"].unique():
-            billing_report_writer = BillingReportWriter(last_export, args.html_path, queries_path=Path(args.course_types).parent)
-            billing_report_writer.add_billing_info_as_sheets(
-                reports.billing_report.query(f"`Наименование образовательной цифровой площадки` == '{platform}'")
-            )
-            billing_report_writer.set_name("billing_report_uchi")
-            billing_report_writer.save_report()
-
-        region_report_writer = RegionReportWriter(last_export, args.html_path, queries_path=Path(args.course_types).parent)
-        region_report_writer.add_region_info_as_sheets(reports.school_active_students_report)
-        region_report_writer.save_report()
-
-        school_report_writer = SchoolActivityReportWriter(last_export, args.html_path, queries_path=Path(args.course_types).parent)
-        school_report_writer.add_sheet(
-            "Активно и подтвержд. по школам", reports.school_active_students_report, {"long_column": 1}
-        )
-        school_report_writer.save_report()
+        # report_writer.add_sheet(
+        #     "Активно и подтвержд. по рег.", reports.region_active_students_report, {"long_column": 1}
+        # )
+        #
+        # # report_writer.add_extra_sheets()
+        #
+        report_writer.save_report()
+        #
+        # # common_billing_report_writer = CommonBillingReportWriter(last_export, html_path, queries_path=Path(course_types).parent)
+        # # common_billing_report_writer.add_sheet(
+        # #     "ЦОК",
+        # #     reports.billing_report.query("`Наименование образовательной цифровой площадки` != 'Учи.Ру'")
+        # # )
+        # # common_billing_report_writer.save_report()
+        #
+        # for platform in reports.billing_report["Наименование образовательной цифровой площадки"].unique():
+        #     billing_report_writer = BillingReportWriter(last_export, args.html_path, queries_path=Path(args.course_types).parent)
+        #     billing_report_writer.add_billing_info_as_sheets(
+        #         reports.billing_report.query(f"`Наименование образовательной цифровой площадки` == '{platform}'")
+        #     )
+        #     billing_report_writer.set_name("billing_report_uchi")
+        #     billing_report_writer.save_report()
+        #
+        # region_report_writer = RegionReportWriter(last_export, args.html_path, queries_path=Path(args.course_types).parent)
+        # region_report_writer.add_region_info_as_sheets(reports.school_active_students_report)
+        # region_report_writer.save_report()
+        #
+        # school_report_writer = SchoolActivityReportWriter(last_export, args.html_path, queries_path=Path(args.course_types).parent)
+        # school_report_writer.add_sheet(
+        #     "Активно и подтвержд. по школам", reports.school_active_students_report, {"long_column": 1}
+        # )
+        # school_report_writer.save_report()
     else:
         logging.info("No new data")
     logging.info("Finished")

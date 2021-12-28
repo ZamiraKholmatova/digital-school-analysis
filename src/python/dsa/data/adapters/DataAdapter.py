@@ -35,7 +35,7 @@ class DataAdapter:
         return Path(args.course_statistics)
 
     def set_preprocessed_path(self, args):
-        self.preprocessed_path = Path(self.get_course_statistics_path(args)).joinpath("preprocessed")
+        self.preprocessed_path = Path(self.get_course_statistics_path(args)).joinpath("preprocessed3d")
 
     def get_raw_statistics_files(self, path):
         return map(Path, filter(
@@ -46,7 +46,6 @@ class DataAdapter:
     def preprocess(self, path):
         files = self.get_raw_statistics_files(path)
         preprocess(files, map_partitions_1c_nd)
-
 
     # @property
     # def db(self):
@@ -218,57 +217,57 @@ class DataAdapter:
     def filter_statistics_files(self, files):
         return filter(lambda filename: filename.endswith(".csv") and not filename.startswith("."), files)
 
-    @abstractmethod
-    def get_statistics_pre_table_name(self):
-        pass
-        # return "course_statustics_pre_unified"
+    # @abstractmethod
+    # def get_statistics_pre_table_name(self):
+    #     pass
+    #     # return "course_statistics_pre_unified"
 
     @abstractmethod
     def get_statistics_table_name(self):
         pass
-        # return "course_statustics_unified"
+        # return "course_statistics_unified"
 
     @abstractmethod
     def get_active_days_count_table_name(self):
         pass
         # return "active_days_count_unified"
 
-    def compute_active_days(self):
-        if self.has_new_data:
-            logging.info("Computing active days")
-            self.shared_model.db.drop_table(self.get_statistics_table_name())
-            self.shared_model.db.execute(
-                f"""
-                CREATE TABLE {self.get_statistics_table_name()} AS
-                SELECT
-                profile_id, educational_course_id, date, 
-                sum(dt) as active_time,
-                sum(dt) >= 600 as is_active
-                FROM 
-                {self.get_statistics_pre_table_name()}
-                GROUP BY
-                profile_id, educational_course_id, date
-                """,
-            )
+    # def compute_active_days(self):
+    #     if self.has_new_data:
+    #         logging.info("Computing active days")
+    #         self.shared_model.db.drop_table(self.get_statistics_table_name())
+    #         self.shared_model.db.execute(
+    #             f"""
+    #             CREATE TABLE {self.get_statistics_table_name()} AS
+    #             SELECT
+    #             profile_id, educational_course_id, date,
+    #             sum(dt) as active_time,
+    #             sum(dt) >= 600 as is_active
+    #             FROM
+    #             {self.get_statistics_pre_table_name()}
+    #             GROUP BY
+    #             profile_id, educational_course_id, date
+    #             """,
+    #         )
 
-    def compute_active_days_count(self):
-        if self.has_new_data:
-            logging.info("Computing full report")
-            for table_name in [self.get_active_days_count_table_name()]:
-                self.shared_model.db.drop_table(table_name)
-
-            self.shared_model.db.execute(
-                f"""
-                CREATE TABLE {self.get_active_days_count_table_name()} AS
-                SELECT
-                educational_course_id, profile_id,
-                CAST(COUNT(CASE WHEN is_active = true THEN 1 ELSE NULL END) AS INTEGER) AS "active_days"
-                FROM 
-                {self.get_statistics_table_name()}
-                {self.get_freeze_date_filtration_rule()}
-                GROUP BY educational_course_id, profile_id
-                """
-            )
+    # def compute_active_days_count(self):
+    #     if self.has_new_data:
+    #         logging.info("Computing full report")
+    #         for table_name in [self.get_active_days_count_table_name()]:
+    #             self.shared_model.db.drop_table(table_name)
+    #
+    #         self.shared_model.db.execute(
+    #             f"""
+    #             CREATE TABLE {self.get_active_days_count_table_name()} AS
+    #             SELECT
+    #             educational_course_id, profile_id,
+    #             CAST(COUNT(CASE WHEN is_active = true THEN 1 ELSE NULL END) AS INTEGER) AS "active_days"
+    #             FROM
+    #             {self.get_statistics_table_name()}
+    #             {self.get_freeze_date_filtration_rule()}
+    #             GROUP BY educational_course_id, profile_id
+    #             """
+    #         )
 
     def get_freeze_date_filtration_rule(self):
         if self.args.freeze_date is not None:
@@ -278,9 +277,9 @@ class DataAdapter:
 
     def load_course_statistics(self):
         for chunk in self.iterate_preprocessed():
-            self.shared_model.db.add_records(chunk, self.get_statistics_pre_table_name())
+            self.shared_model.db.add_records(chunk, self.get_statistics_table_name())
 
-        self.compute_active_days()
+        # self.compute_active_days()
         # self.compute_active_days_count()
 
     # def load_course_statistics(self, path, date_field="created_at", **kwargs):
@@ -337,8 +336,8 @@ class DataAdapter:
                 self.delete_if_needed()
                 for chunk in pd.read_csv(
                     file, chunksize=1000000,
-                    names=["profile_id", "educational_course_id", "date", "start_time", "end_time", "dt"], header=None,
-                    parse_dates=["date", "start_time", "end_time"], dtype={"educational_course_id": "string"}
+                    names=["profile_id", "educational_course_id", "created_at"], header=None,
+                    parse_dates=["created_at"], dtype={"educational_course_id": "string"}
                 ):
                     def encode_course_id(id_):
                         return self.shared_model.mappings["educational_course_id2course_id"].get(
@@ -366,13 +365,13 @@ class DataAdapter_United(DataAdapter):
         super().__init__(*args, **kwargs)
 
     def delete_if_needed(self):
-        self.shared_model.db.drop_table(self.get_statistics_pre_table_name())
+        self.shared_model.db.drop_table(self.get_statistics_table_name())
 
-    def get_statistics_pre_table_name(self):
-        return "course_statustics_pre_unified"
+    # def get_statistics_pre_table_name(self):
+    #     return "course_statistics_pre_unified"
 
     def get_statistics_table_name(self):
-        return "course_statustics_unified"
+        return "course_statistics_unified"
 
     def get_active_days_count_table_name(self):
         return "active_days_count_unified"
@@ -441,11 +440,11 @@ class DataAdapter_FoxFord(DataAdapter):
         )
         return data
 
-    def get_statistics_pre_table_name(self):
-        return "course_statustics_pre_foxford"
+    # def get_statistics_pre_table_name(self):
+    #     return "course_statistics_pre_foxford"
 
     def get_statistics_table_name(self):
-        return "course_statustics_foxford"
+        return "course_statistics_foxford"
 
     def get_active_days_count_table_name(self):
         return "active_days_count_foxford"
@@ -485,11 +484,11 @@ class DataAdapter_MEO(DataAdapter):
     def resolve_structure(self, data):
         return data
 
-    def get_statistics_pre_table_name(self):
-        return "course_statustics_pre_meo"
+    # def get_statistics_pre_table_name(self):
+    #     return "course_statistics_pre_meo"
 
     def get_statistics_table_name(self):
-        return "course_statustics_meo"
+        return "course_statistics_meo"
 
     def get_active_days_count_table_name(self):
         return "active_days_count_meo"
@@ -543,11 +542,11 @@ class DataAdapter_Uchi(DataAdapter):
         # }, axis=1, inplace=True)
         # return data[["profile_id", "educational_course_id", "created_at"]]
 
-    def get_statistics_pre_table_name(self):
-        return "course_statustics_pre_uchi"
+    # def get_statistics_pre_table_name(self):
+    #     return "course_statistics_pre_uchi"
 
     def get_statistics_table_name(self):
-        return "course_statustics_uchi"
+        return "course_statistics_uchi"
 
     def get_active_days_count_table_name(self):
         return "active_days_count_uchi"
