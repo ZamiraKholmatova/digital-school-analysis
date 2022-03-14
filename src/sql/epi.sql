@@ -41,8 +41,10 @@ COPY (
     student.is_deleted OR student_grade_educational_institution.is_deleted as "is_deleted"
     FROM
     student
+--     (SELECT * FROM student WHERE created_at in (select max(created_at) from student_grade_educational_institution group by student_id))
     LEFT JOIN student_grade_educational_institution on (student.id = student_grade_educational_institution.student_id)
     LEFT JOIN grade_educational_institution on (student_grade_educational_institution.grade_educational_institution_id = grade_educational_institution.id)
+    WHERE student_grade_educational_institution.created_at in (select max(created_at) from student_grade_educational_institution group by student_id)
 ) TO '/tmp/export_34625/student_16.11.csv' DELIMITER ',' CSV HEADER;
 
 COPY (
@@ -55,7 +57,9 @@ COPY (
     pei.approved_status as "approved_status",
     pei.role as "role"
     FROM (
-        SELECT DISTINCT smartcode_id FROM smartcode_external_system
+        SELECT DISTINCT smartcode_id FROM (
+            SELECT smartcode_id FROM smartcode_external_system WHERE is_deleted = false
+        ) AS not_deleted
     ) AS activated
     LEFT JOIN smartcode ON activated.smartcode_id = smartcode.id
     LEFT JOIN profile_educational_institution AS pei ON pei.profile_id = smartcode.profile_id
@@ -67,9 +71,11 @@ COPY (
     eins.region AS "Регион",
     eins.short_name AS "Школа",
     eins.inn AS "ИНН",
+    COUNT(CASE WHEN pei.role = 'STUDENT' THEN 1 ELSE NULL END) AS "Всего учеников",
     COUNT(CASE WHEN pei.role = 'STUDENT' AND pei.approved_status = 'NONE' THEN 1 ELSE NULL END) AS "Не подтвержденные ученики",
     COUNT(CASE WHEN pei.role = 'STUDENT' AND pei.approved_status = 'NOT_APPROVED' THEN 1 ELSE NULL END) AS "Отклоненные ученики",
     COUNT(CASE WHEN pei.role = 'STUDENT' AND pei.approved_status = 'APPROVED' THEN 1 ELSE NULL END) AS "Подтвержденные ученики",
+    COUNT(CASE WHEN pei.role = 'TEACHER' THEN 1 ELSE NULL END) AS "Всего преподавателей",
     COUNT(CASE WHEN pei.role = 'TEACHER' AND pei.approved_status = 'NONE' THEN 1 ELSE NULL END) AS "Не подтвержденные преподаватели",
     COUNT(CASE WHEN pei.role = 'TEACHER' AND pei.approved_status = 'NOT_APPROVED' THEN 1 ELSE NULL END) AS "Отклоненные преподаватели",
     COUNT(CASE WHEN pei.role = 'TEACHER' AND pei.approved_status = 'APPROVED' THEN 1 ELSE NULL END) AS "Подтвержденные преподаватели"

@@ -3,6 +3,7 @@ from collections import namedtuple
 from pathlib import Path
 
 import pandas as pd
+import pickle
 
 from dsa.data import SQLTable, DBKVStore
 from dsa.data.adapters.DataAdapter import DataAdapter_United, DataAdapter_FoxFord, DataAdapter_MEO, DataAdapter_Uchi
@@ -14,6 +15,7 @@ class SharedModel:
     def __init__(
             self, args
     ):
+        self.already_payed = None                                     ################ADDED HERE
         self.minute_activity = args.minute_activity
         self.resources_path = Path(args.resources_path)
         self.file_version_table_name = "file_versions"
@@ -37,6 +39,7 @@ class SharedModel:
         self.load_external_system(Path(args.external_system))
         self.load_course_types(args.course_types)
         self.load_billing_info(Path(args.billing))
+        self.load_already_payed(args.payed)                                       ################ADDED HERE
 
         self.prepare_data_adapters(args)
         self.import_statistics()
@@ -195,6 +198,10 @@ class SharedModel:
             )
             self.save_current_file_version(path)
 
+    def load_already_payed(self, path):                                                         ################ADDED HERE
+        with open(path, 'rb') as fp:
+            self.already_payed = pickle.load(fp)
+
     def load_student_grades(self, path):
         if self.is_new_version(path):
             logging.info("Importing student grades")
@@ -217,86 +224,86 @@ class SharedModel:
         data = self.read_table_dump(path)
         self.external_system = dict(zip(data["system_code"], data["short_name"]))
 
-    def read_paper_letters_info(self, path):
-        letters_status = self.read_table_dump(
-            path, dtype={"ИНН": "Int64"},
-        )
-        return letters_status[["ИНН", "Статус письма"]].dropna(subset=["ИНН"])
+    # def read_paper_letters_info(self, path):
+    #     letters_status = self.read_table_dump(
+    #         path, dtype={"ИНН": "Int64"},
+    #     )
+    #     return letters_status[["ИНН", "Статус письма"]].dropna(subset=["ИНН"])
+    #
+    # def read_schools_approved_in_november(self, path):
+    #     schools = self.read_table_dump(path, dtype={"inn": "Int64"})
+    #     schools = schools.query("approved == 1").rename({"inn": "ИНН"}, axis=1).dropna()
+    #     return schools[["ИНН"]]
 
-    def read_schools_approved_in_november(self, path):
-        schools = self.read_table_dump(path, dtype={"inn": "Int64"})
-        schools = schools.query("approved == 1").rename({"inn": "ИНН"}, axis=1).dropna()
-        return schools[["ИНН"]]
-
-    @staticmethod
-    def merge_special_status(paper_letters, approved_in_november):
-        approved_status = paper_letters.copy()
-
-        approved_in_november = set(
-            approved_in_november["ИНН"]
-        )
-
-        activated_in_november_status = "Активировали в ноябре"
-
-        special_status_records = []
-        for ind, row in approved_status.iterrows():
-            if row["ИНН"] in approved_in_november: continue
-            rec = {
-                "inn": row["ИНН"],
-                "special_status": row["Статус письма"]
-            }
-            if pd.isna(rec["special_status"]) and rec["inn"] in approved_in_november:
-                rec["special_status"] = activated_in_november_status
-            special_status_records.append(rec)
-
-        for school in approved_in_november:  # - set(approved_status["ИНН"]):
-            rec = {
-                "inn": school,
-                "special_status": activated_in_november_status
-            }
-            special_status_records.append(rec)
-
-        special_status = pd.DataFrame.from_records(special_status_records)
-        return special_status
+    # @staticmethod
+    # def merge_special_status(paper_letters, approved_in_november):
+    #     approved_status = paper_letters.copy()
+    #
+    #     approved_in_november = set(
+    #         approved_in_november["ИНН"]
+    #     )
+    #
+    #     activated_in_november_status = "Активировали в ноябре"
+    #
+    #     special_status_records = []
+    #     for ind, row in approved_status.iterrows():
+    #         if row["ИНН"] in approved_in_november: continue
+    #         rec = {
+    #             "inn": row["ИНН"],
+    #             "special_status": row["Статус письма"]
+    #         }
+    #         if pd.isna(rec["special_status"]) and rec["inn"] in approved_in_november:
+    #             rec["special_status"] = activated_in_november_status
+    #         special_status_records.append(rec)
+    #
+    #     for school in approved_in_november:  # - set(approved_status["ИНН"]):
+    #         rec = {
+    #             "inn": school,
+    #             "special_status": activated_in_november_status
+    #         }
+    #         special_status_records.append(rec)
+    #
+    #     special_status = pd.DataFrame.from_records(special_status_records)
+    #     return special_status
 
     def load_educational_institution(self, path):
-        approved_in_november_path = path.parent.joinpath("approved_in_november____.csv")
-        letter_schools_path = path.parent.joinpath("schools_paper_letters.csv")
-
-        if self.is_new_version(path) or self.is_new_version(approved_in_november_path) or self.is_new_version(letter_schools_path):
+        # approved_in_november_path = path.parent.joinpath("approved_in_november____.csv")
+        # letter_schools_path = path.parent.joinpath("schools_paper_letters.csv")
+        # or self.is_new_version(approved_in_november_path) or self.is_new_version(letter_schools_path):
+        if self.is_new_version(path):
             logging.info("Importing educational institutions")
             path = Path(path)
             data = self.read_table_dump(path, dtype={"inn": "Int64"}) \
                 .rename({"id": "educational_institution_id"}, axis=1)
 
-            paper_letters = self.read_paper_letters_info(letter_schools_path)
+            # paper_letters = self.read_paper_letters_info(letter_schools_path)
+            #
+            # approved_in_november = self.read_schools_approved_in_november(
+            #     approved_in_november_path
+            #     # path.parent.joinpath("schools_approved_in_november.xlsx")
+            # )
 
-            approved_in_november = self.read_schools_approved_in_november(
-                approved_in_november_path
-                # path.parent.joinpath("schools_approved_in_november.xlsx")
-            )
-
-            special_status = self.merge_special_status(paper_letters, approved_in_november)
+            # special_status = self.merge_special_status(paper_letters, approved_in_november)
 
             # paper_letters.merge(special_status, how="outer", left_on="ИНН", right_on="inn").to_csv(
             #     "schools_special_status.csv", index=False)
 
-            merged = data.merge(special_status, how="left", left_on="inn", right_on="inn").drop("inn", axis=1)
-
+            # merged = data.merge(special_status, how="left", left_on="inn", right_on="inn").drop("inn", axis=1)
+            merged = data.drop("inn", axis=1)
             self.convert_ids_to_int(merged, ["educational_institution_id"])
 
             self.db.replace_records(
-                merged[["educational_institution_id", "educational_institution_id_uuid", "special_status"]],
+                merged[["educational_institution_id", "educational_institution_id_uuid"]],#, "special_status"]],
                 "educational_institution",
                 dtype={
                     "educational_institution_id": "INT PRIMARY KEY",
-                    "educational_institution_id_uuid": "TEXT UNIQUE NOT NULL",
-                    "special_status": "TEXT"
+                    "educational_institution_id_uuid": "TEXT UNIQUE NOT NULL"#,
+                    # "special_status": "TEXT"
                 }
             )
             self.save_current_file_version(path)
-            self.save_current_file_version(approved_in_november_path)
-            self.save_current_file_version(letter_schools_path)
+            # self.save_current_file_version(approved_in_november_path)
+            # self.save_current_file_version(letter_schools_path)
 
     def load_profile_approved_status(self, path):
         if self.is_new_version(path):
@@ -328,10 +335,10 @@ class SharedModel:
 
     def prepare_data_adapters(self, args):
         self.adapters = [
-            DataAdapter_United(shared_model=self, args=args),
-            DataAdapter_FoxFord(shared_model=self, args=args),
-            DataAdapter_MEO(shared_model=self, args=args),
-            DataAdapter_Uchi(shared_model=self, args=args)
+            DataAdapter_United(shared_model=self, args=args)
+            # DataAdapter_FoxFord(shared_model=self, args=args),
+            # DataAdapter_MEO(shared_model=self, args=args),
+            # DataAdapter_Uchi(shared_model=self, args=args)
         ]
 
     def import_statistics(self):
@@ -346,6 +353,7 @@ class SharedModel:
                 """, chunksize=1000000)
             for chunk in adapter_data:
                 chunk['created_at'] = pd.to_datetime(chunk['created_at'])
+                chunk['date'] = chunk['created_at']
                 chunk["created_at"] = chunk["created_at"].apply(lambda date: date.replace(day=1))
                 self.db.add_records(chunk, "course_statistics")
 

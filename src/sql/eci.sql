@@ -10,22 +10,28 @@ COPY educational_courses(id,deleted,course_type_id,parent_id,external_link,exter
 COPY educational_course_type(id, type_name)  TO '/tmp/export_34625/educational_course_type_16.11.csv' DELIMITER ',' CSV HEADER;
 
 -- statistics
---COPY educational_course_statistic  TO '/tmp/export_34625/educational_course_statistic_16.11.csv' DELIMITER ',' CSV HEADER;
-COPY (
-    SELECT
-    profile_id, educational_course_id, educational_course_statistic.created_at, entity_id as "statistics_type"
-    FROM
-    educational_course_statistic
-    JOIN educational_courses ON educational_course_id = educational_courses.id
-    JOIN statistic_type ON statistic_type.id = statistic_type_id
-    WHERE
-    (
-        system_code = '0b37f22e-c46c-4d53-b0e7-8bdaaf51a8d0'::uuid OR
-        system_code = '3a4b37c1-1f7d-4cb9-b144-e24c708d9c20'::uuid
-    ) AND
-    entity_id = 2 or entity_id = 3
-    ORDER BY educational_course_statistic.created_at
-) TO '/tmp/export_34625/educational_course_statistic_16.11.csv' DELIMITER ',' CSV HEADER;
+-- COPY educational_course_statistic  TO '/tmp/export_34625/educational_course_statistic_16.11.csv' DELIMITER ',' CSV HEADER;
+-- COPY (
+--     SELECT
+--     profile_id, educational_course_id, educational_course_statistic.created_at, statistic_type as "statistics_type"
+--     FROM
+--     educational_course_statistic
+-- --     old_educational_course_statistic as educational_course_statistic
+--     JOIN educational_courses ON educational_course_id = educational_courses.id
+-- --     JOIN statistic_type ON statistic_type.id = statistic_type_id
+--     WHERE
+-- --     (
+--         system_code = '0b37f22e-c46c-4d53-b0e7-8bdaaf51a8d0'::uuid OR
+--         system_code = '3a4b37c1-1f7d-4cb9-b144-e24c708d9c20'::uuid OR
+--         system_code = '13788b9a-3426-45b2-9ba5-d8cec8c03c0c'::uuid OR
+--         system_code = 'd2735d92-6ad6-49c4-9b36-c3b16cee695d'::uuid OR
+--         system_code = '61dbfd85-2f0b-49eb-ad60-343cc5f12a36'::uuid OR
+--         system_code = '1d258153-7d01-4ed7-9035-3f9df9cf578f'::uuid
+--     ) AND
+-- --     entity_id = 2 or entity_id = 3
+--     AND statistic_type = 'ENTER_TO_STUDY_SUBJECT'
+--     ORDER BY educational_course_statistic.created_at
+-- ) TO '/tmp/export_34625/educational_course_statistic_16.11.csv' DELIMITER ',' CSV HEADER;
 
 -- statistics type description
 COPY statistic_type  TO '/tmp/export_34625/statistic_type_16.11.csv' DELIMITER ',' CSV HEADER;

@@ -792,12 +792,12 @@ class SharedModel:
                 SELECT
                 platform as "Платформа",
                 CAST(COUNT(DISTINCT profile_id) AS INTEGER) as "Всего пользователей",
-                CAST(COUNT(DISTINCT CASE WHEN active_days >= 5 THEN profile_id ELSE NULL END) AS INTEGER) as "Активных пользователей",
+                CAST(COUNT(DISTINCT CASE WHEN active_days >= 3 THEN profile_id ELSE NULL END) AS INTEGER) as "Активных пользователей",
                 CAST(COUNT(DISTINCT CASE WHEN approved_status = 'APPROVED' AND 
                             (
                                     special_status = 'Получено адресатом' OR special_status = 'Активировали в ноябре'
                             ) THEN profile_id ELSE NULL END) AS INTEGER) as "Подтверждённых пользователей использующих сервис",
-                CAST(COUNT(DISTINCT CASE WHEN approved_status = 'APPROVED' AND active_days >= 5 AND 
+                CAST(COUNT(DISTINCT CASE WHEN approved_status = 'APPROVED' AND active_days >= 3 AND 
                             (
                                     special_status = 'Получено адресатом' OR special_status = 'Активировали в ноябре'
                             ) THEN profile_id ELSE NULL END) AS INTEGER) as "Активных и подтверждённых пользователей"
@@ -827,11 +827,11 @@ class SharedModel:
                     platform as "Платформа",
                     course_name as "Название",
                     CAST(COUNT(DISTINCT profile_id) AS INTEGER) as "Всего",
-                    CAST(COUNT(CASE WHEN active_days >=5 AND approved_status = 'APPROVED' AND 
+                    CAST(COUNT(CASE WHEN active_days >=3 AND approved_status = 'APPROVED' AND 
                             (
                                 special_status = 'Получено адресатом' OR special_status = 'Активировали в ноябре'
                             ) THEN 1 ELSE NULL END) AS INTEGER) AS "Активные Подтверждённые",
-                    CAST(COUNT(CASE WHEN active_days >=5 THEN 1 ELSE NULL END) AS INTEGER) AS "Активные Всего"
+                    CAST(COUNT(CASE WHEN active_days >=3 THEN 1 ELSE NULL END) AS INTEGER) AS "Активные Всего"
                     FROM
                     full_report
                     GROUP BY

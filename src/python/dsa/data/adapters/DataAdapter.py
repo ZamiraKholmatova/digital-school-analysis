@@ -60,7 +60,10 @@ class DataAdapter:
     def format_course_structure_columns(self, data):
         data = data.rename({"deleted": "is_deleted"}, axis=1)
         data = data.query(
-            "system_code == '0b37f22e-c46c-4d53-b0e7-8bdaaf51a8d0' or system_code == '3a4b37c1-1f7d-4cb9-b144-e24c708d9c20'" # or system_code == 'd2735d92-6ad6-49c4-9b36-c3b16cee695d'"
+            "system_code == '0b37f22e-c46c-4d53-b0e7-8bdaaf51a8d0' or system_code == '3a4b37c1-1f7d-4cb9-b144-e24c708d9c20' or "
+            "system_code == 'd2735d92-6ad6-49c4-9b36-c3b16cee695d' or system_code == '13788b9a-3426-45b2-9ba5-d8cec8c03c0c' or "
+            "system_code == '61dbfd85-2f0b-49eb-ad60-343cc5f12a36' or system_code == '1d258153-7d01-4ed7-9035-3f9df9cf578f' or "
+            "system_code == 'f1e908c8-7d15-11ec-90d6-0242ac120003'"
         )
         return data
 
@@ -104,7 +107,7 @@ class DataAdapter:
                 self.shared_model.normalize_is_deleted_field(data)
             else:
                 data["is_deleted"] = False
-            data = data.query("is_deleted == False")
+            # data = data.query("is_deleted == False")
             data = self.resolve_structure(data)
             data = self.prepare_course_ids(data, path)
             # provider = next(iter(data["provider"]))
@@ -367,8 +370,8 @@ class DataAdapter_United(DataAdapter):
     def delete_if_needed(self):
         self.shared_model.db.drop_table(self.get_statistics_table_name())
 
-    # def get_statistics_pre_table_name(self):
-    #     return "course_statistics_pre_unified"
+    def get_statistics_pre_table_name(self):
+        return "course_statistics_pre_unified"
 
     def get_statistics_table_name(self):
         return "course_statistics_unified"
