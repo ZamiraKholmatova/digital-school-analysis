@@ -1,6 +1,6 @@
 import logging
 from collections import namedtuple, defaultdict
-from datetime import timedelta
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -23,7 +23,7 @@ Reports = namedtuple(
 
 class Reporter:
     def __init__(
-            self, args, shared_model, freeze_date=None, start_date=None
+            self, args, shared_model, freeze_date=None, start_date=None, current_month=None
     ):
         self.statistics_import_chunk_size = 1000000
         self.freeze_date = freeze_date
@@ -35,6 +35,7 @@ class Reporter:
         self.check_if_payed = self.shared_model.already_payed
         # self.compute_active_days()
         self.licence_threshold = 3
+        self.current_month = date.today().replace(day=1).strftime("%Y-%m-%d %H:%M:%S")
 
 
     @property
@@ -394,7 +395,7 @@ class Reporter:
                 SELECT platform, course_name, month_start, profile_id, profile_id_uuid
                 FROM full_report
                 WHERE approved_status = 'APPROVED' AND ((role = 'TEACHER' AND platform = '1С:Урок') OR (role = 'STUDENT' AND platform != '1С:Урок'))
-                AND active_days >= {self.licence_threshold}
+                AND active_days >= {self.licence_threshold} AND month_start = '{self.current_month}'
                 """
             )
 

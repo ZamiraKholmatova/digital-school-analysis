@@ -40,7 +40,6 @@ class SharedModel:
         self.load_course_types(args.course_types)
         self.load_billing_info(Path(args.billing))
         self.load_already_payed(args.payed)                                       ################ADDED HERE
-
         self.prepare_data_adapters(args)
         self.import_statistics()
 
