@@ -198,8 +198,13 @@ class SharedModel:
             self.save_current_file_version(path)
 
     def load_already_payed(self, path):                                                         ################ADDED HERE
-        with open(path, 'rb') as fp:
-            self.already_payed = pickle.load(fp)
+        # with open(path, 'rb') as fp:
+            # self.already_payed = pickle.load(fp)
+        payed_df = pd.read_csv(path, dtype={'profile_id_uuid':'string',
+                                           'course_name':'string',
+                                           'short_name':'string'})
+        self.already_payed = list(zip(payed_df['profile_id_uuid'], payed_df['course_name'], payed_df['short_name']))
+        print('Already payed are loaded. Length is ', len(self.already_payed))
 
     def load_student_grades(self, path):
         if self.is_new_version(path):

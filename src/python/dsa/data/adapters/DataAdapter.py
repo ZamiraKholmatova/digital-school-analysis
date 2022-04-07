@@ -137,7 +137,7 @@ class DataAdapter:
                 to_write[[
                     "educational_course_id", "educational_course_id_uuid",
                     "course_name", "provider", "course_id", "is_deleted"]],
-                "course_information",
+                    "course_information",
                 dtype={
                     "educational_course_id": "INT PRIMARY KEY",
                     "educational_course_id_uuid": "TEXT UNIQUE NOT NULL",
@@ -173,7 +173,7 @@ class DataAdapter:
         # print(course["course_name"], course_types[course["course_type_id"]], course["external_link"], sep="\t")
         parent_id = course["parent_id"]
         # print(parent_id, type(parent_id))
-        if isinstance(parent_id, float) and isnan(parent_id):
+        if isinstance(parent_id, float) and isnan(parent_id):                                   ###############ADD HERE
             course_name = course["course_name"]
             course_type = self.get_course_type(course["course_type_id"])
             provider = self.shared_model.external_system[course["system_code"]]

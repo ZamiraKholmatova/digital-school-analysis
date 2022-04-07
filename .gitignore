@@ -7,4 +7,5 @@ src/python/dsa/__pycache__/
 src/python/dsa/data/__pycache__/
 src/python/dsa/data/adapters/__pycache__/
 src/python/dsa/writers/__pycache__/
-=
+*.csv
+downloads
