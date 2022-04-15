@@ -98,7 +98,7 @@ COPY (
     LEFT JOIN smartcode
     ON activated.smartcode_id = smartcode.id
     LEFT JOIN profile_educational_institution AS pei ON pei.profile_id = smartcode.profile_id
-    WHERE pei.role = 'STUDENT' OR pei.role='TEACHER' GROUP BY approved_status
+    WHERE (pei.role = 'STUDENT' OR pei.role='TEACHER') AND pei.is_deleted = 'f' GROUP BY approved_status
 ) TO '/tmp/export_34625/Учеников_и_Преподавателей_по_статусам_подтверждения.csv' DELIMITER ',' CSV HEADER;
 
 

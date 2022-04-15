@@ -35,8 +35,7 @@ class Reporter:
         self.check_if_payed = self.shared_model.already_payed
         # self.compute_active_days()
         self.licence_threshold = 3
-        self.current_month = '2022-03-01 00:00:00'
-        #date.today().replace(day=1).strftime("%Y-%m-%d %H:%M:%S")
+        self.current_month = date.today().replace(day=1).strftime("%Y-%m-%d %H:%M:%S") #'2022-03-01 00:00:00'
 
 
     @property
@@ -137,8 +136,7 @@ class Reporter:
                 ) as course_titles
                 on active_days_count.educational_course_id = course_titles.course_id
                 LEFT JOIN student_grades on active_days_count.profile_id = student_grades.profile_id
-                {self.get_filtration_rules()}
-                AND (profile_approved_status.educational_institution_id != 'f04e94ca-f99f-4a77-af0a-a07094ccbcea' OR profile_approved_status.educational_institution_id != 'b345f7f7-bd59-42b7-80b9-a57613bd2924')
+                WHERE (profile_approved_status.educational_institution_id != 'f04e94ca-f99f-4a77-af0a-a07094ccbcea' OR profile_approved_status.educational_institution_id != 'b345f7f7-bd59-42b7-80b9-a57613bd2924')
                 """
             )
 
@@ -395,7 +393,7 @@ class Reporter:
                 CREATE TABLE billing AS
                 SELECT platform, course_name, month_start, profile_id, profile_id_uuid
                 FROM full_report
-                WHERE approved_status = 'APPROVED' AND ((role = 'TEACHER' AND platform = '1С:Урок') OR (role = 'STUDENT' AND platform != '1С:Урок'))
+                WHERE ((role = 'TEACHER' AND platform = '1С:Урок') OR (role = 'STUDENT' AND platform != '1С:Урок'))
                 AND active_days >= {self.licence_threshold} AND month_start = '{self.current_month}'
                 """
             )
