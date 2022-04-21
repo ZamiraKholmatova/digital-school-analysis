@@ -22,6 +22,7 @@ COPY (
     FROM
     profile_educational_institution
     LEFT JOIN profile_educational_confirmation_log on (profile_educational_institution.id = profile_educational_confirmation_log.profile_educational_institution_id)
+    WHERE profile_educational_institution.updated_at in (select max(updated_at) from profile_educational_institution group by profile_id)
     GROUP BY profile_id, profile_educational_institution.educational_institution_id, approved_status, role, profile_educational_institution.updated_at, profile_educational_institution.is_deleted
 ) TO '/tmp/export_34625/profile_educational_institution_16.11.csv' DELIMITER ',' CSV HEADER;
 

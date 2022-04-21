@@ -35,7 +35,7 @@ class Reporter:
         self.check_if_payed = self.shared_model.already_payed
         # self.compute_active_days()
         self.licence_threshold = 3
-        self.current_month = date.today().replace(day=1).strftime("%Y-%m-%d %H:%M:%S") #'2022-03-01 00:00:00'
+        self.current_month = '2022-04-01 00:00:00' #date.today().replace(day=1).strftime("%Y-%m-%d %H:%M:%S") #'2022-03-01 00:00:00'
 
 
     @property
