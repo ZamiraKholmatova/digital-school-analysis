@@ -15,15 +15,27 @@ COPY role(id, role)  TO '/tmp/export_34625/role_16.11.csv' DELIMITER ',' CSV HEA
 --COPY profile_educational_institution  TO '/tmp/export_34625/profile_educational_institution_16.11.csv' DELIMITER ',' CSV HEADER;
 
 -- this table contains information about role, approved status and institution, as well as is_deleted flag
+-- COPY (
+--     SELECT
+--     profile_id, educational_institution_id, approved_status, role, profile_educational_institution.updated_at,
+--     max(profile_educational_confirmation_log.updated_at) as "approval_date", profile_educational_institution.is_deleted
+--     FROM
+--     profile_educational_institution
+--     LEFT JOIN profile_educational_confirmation_log on (profile_educational_institution.id = profile_educational_confirmation_log.profile_educational_institution_id)
+--     WHERE profile_educational_institution.updated_at in (select max(updated_at) from profile_educational_institution group by profile_id)
+--     GROUP BY profile_id, profile_educational_institution.educational_institution_id, approved_status, role, profile_educational_institution.updated_at, profile_educational_institution.is_deleted
+-- ) TO '/tmp/export_34625/profile_educational_institution_16.11.csv' DELIMITER ',' CSV HEADER;
+
+-- UPD: this table contains information about role, approved status and institution, as well as is_deleted flag
 COPY (
     SELECT
-    profile_id, educational_institution_id, approved_status, role, profile_educational_institution.updated_at,
-    max(profile_educational_confirmation_log.updated_at) as "approval_date", profile_educational_institution.is_deleted
+    pei.profile_id, pei.educational_institution_id, pei.approved_status, pei.role, pei.updated_at,
+    max(profile_educational_confirmation_log.updated_at) as "approval_date", pei.is_deleted
     FROM
-    profile_educational_institution
-    LEFT JOIN profile_educational_confirmation_log on (profile_educational_institution.id = profile_educational_confirmation_log.profile_educational_institution_id)
-    WHERE profile_educational_institution.updated_at in (select max(updated_at) from profile_educational_institution group by profile_id)
-    GROUP BY profile_id, profile_educational_institution.educational_institution_id, approved_status, role, profile_educational_institution.updated_at, profile_educational_institution.is_deleted
+    profile_educational_institution as pei
+    LEFT JOIN profile_educational_confirmation_log on (pei.id = profile_educational_confirmation_log.profile_educational_institution_id)
+    WHERE pei.updated_at = (SELECT max(updated_at) from profile_educational_institution as pei1 where pei.profile_id=pei1.profile_id)
+    GROUP BY pei.profile_id, pei.educational_institution_id, pei.approved_status, pei.role, pei.updated_at, pei.is_deleted
 ) TO '/tmp/export_34625/profile_educational_institution_16.11.csv' DELIMITER ',' CSV HEADER;
 
 -- educational_institution contains school address and inn
@@ -34,18 +46,32 @@ COPY external_system(id, short_name, system_code)  TO '/tmp/export_34625/externa
 --COPY student(id, grade) TO '/tmp/export_34625/student_16.11.csv' DELIMITER ',' CSV HEADER;
 
 -- this table is used solely for grades
+-- COPY (
+--     SELECT
+--     student.id,
+--     educational_institution_id,
+--     grade,
+--     student.is_deleted OR student_grade_educational_institution.is_deleted as "is_deleted"
+--     FROM
+--     student
+-- --     (SELECT * FROM student WHERE created_at in (select max(created_at) from student_grade_educational_institution group by student_id))
+--     LEFT JOIN student_grade_educational_institution on (student.id = student_grade_educational_institution.student_id)
+--     LEFT JOIN grade_educational_institution on (student_grade_educational_institution.grade_educational_institution_id = grade_educational_institution.id)
+--     WHERE student_grade_educational_institution.created_at in (select max(created_at) from student_grade_educational_institution group by student_id)
+-- ) TO '/tmp/export_34625/student_16.11.csv' DELIMITER ',' CSV HEADER;
+
+-- UPD: this table is used solely for grades
 COPY (
     SELECT
     student.id,
     educational_institution_id,
     grade,
-    student.is_deleted OR student_grade_educational_institution.is_deleted as "is_deleted"
+    student.is_deleted OR sgei.is_deleted as "is_deleted"
     FROM
     student
---     (SELECT * FROM student WHERE created_at in (select max(created_at) from student_grade_educational_institution group by student_id))
-    LEFT JOIN student_grade_educational_institution on (student.id = student_grade_educational_institution.student_id)
-    LEFT JOIN grade_educational_institution on (student_grade_educational_institution.grade_educational_institution_id = grade_educational_institution.id)
-    WHERE student_grade_educational_institution.created_at in (select max(created_at) from student_grade_educational_institution group by student_id)
+    LEFT JOIN student_grade_educational_institution sgei on (student.id = sgei.student_id)
+    LEFT JOIN grade_educational_institution on (sgei.grade_educational_institution_id = grade_educational_institution.id)
+    WHERE sgei.created_at = (select max(created_at) from student_grade_educational_institution as sgei1 where sgei.student_id=sgei1.student_id)
 ) TO '/tmp/export_34625/student_16.11.csv' DELIMITER ',' CSV HEADER;
 
 COPY (
