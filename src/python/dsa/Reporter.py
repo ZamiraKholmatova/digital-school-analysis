@@ -106,7 +106,6 @@ class Reporter:
                 CAST(COUNT(created_at) AS INTEGER) AS "active_days"
                 FROM
                 course_statistics
-                LEFT JOIN billing_info ON educational_course_id = course_id
                 {self.get_date_filtration_rule()}
                 GROUP BY educational_course_id, profile_id, created_at
                 """
