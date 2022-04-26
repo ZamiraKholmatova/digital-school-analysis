@@ -174,7 +174,7 @@ class SharedModel:
     def load_billing_info(self, path):
         if self.is_new_version(path):
             logging.info("Importing billing info")
-            data = self.read_table_dump(path, dtype={"price": "Float32", "approved": "Float32"}) \
+            data = self.read_table_dump(path, dtype={"price": "Float32", "approved": "Float32"}, parse_dates=['approved_date'], infer_datetime_format=True) \
                 .rename({"short_name": "provider"}, axis=1)
 
             # assert data["price"].isna().any() is False
@@ -185,7 +185,7 @@ class SharedModel:
             self.convert_ids_to_int(data, ["provider_course_name"])
             data.rename({"provider_course_name": "course_id", "provider_course_name_uuid": "provider_course_name"}, axis=1, inplace=True)
             self.db.replace_records(
-                data[["provider", "course_name", "provider_course_name", "course_id", "price", "approved"]],
+                data[["provider", "course_name", "provider_course_name", "course_id", "price", "approved", "approved_date"]],
                 "billing_info",
                 dtype={
                     "course_id": "INT PRIMARY KEY",
@@ -353,6 +353,8 @@ class SharedModel:
                 SELECT
                 DISTINCT profile_id, educational_course_id, created_at
                 FROM {adapter.get_statistics_table_name()}
+                LEFT JOIN billing_info ON educational_course_id = course_id
+                WHERE created_at >= billing_info.approved_date
                 ORDER BY profile_id, educational_course_id, created_at
                 """, chunksize=1000000)
             for chunk in adapter_data:
