@@ -108,7 +108,7 @@ class DataAdapter:
                 self.shared_model.normalize_is_deleted_field(data)
             else:
                 data["is_deleted"] = False
-            # data = data.query("is_deleted == False")
+            data = data.query("is_deleted == False")
             data = self.resolve_structure(data)
             data = self.prepare_course_ids(data, path)
             # provider = next(iter(data["provider"]))
