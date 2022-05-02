@@ -65,12 +65,13 @@ COPY (
     SELECT
     student.id,
     educational_institution_id,
-    grade,
+    value as "grade",
     student.is_deleted OR sgei.is_deleted as "is_deleted"
     FROM
     student
     LEFT JOIN student_grade_educational_institution sgei on (student.id = sgei.student_id)
     LEFT JOIN grade_educational_institution on (sgei.grade_educational_institution_id = grade_educational_institution.id)
+    LEFT JOIN grade on grade_educational_institution.grade_id = grade.id
     WHERE sgei.created_at = (select max(created_at) from student_grade_educational_institution as sgei1 where sgei.student_id=sgei1.student_id)
 ) TO '/tmp/export_34625/student_16.11.csv' DELIMITER ',' CSV HEADER;
 
@@ -160,25 +161,25 @@ COPY (
 ) TO '/tmp/export_34625/Прирост_учеников_и_учителей.csv' DELIMITER ',' CSV HEADER;
 
 
-COPY (
-    SELECT
-    profile.full_name as "ФИО",
-    profile.email as "Email",
-    profile.phone as "Телефон",
-    region.region_name as "Регион",
-    ei.short_name as "Школа",
-    CASE WHEN pei.approved_status = 'APPROVED' THEN 'подтверждён'
-        WHEN pei.approved_status = 'NONE' THEN 'в процессе'
-        WHEN pei.approved_status = 'NOT_APPROVED'
-        THEN 'отклонен' END AS "Статус"
-    FROM profile_educational_institution as pei
-    LEFT JOIN profile ON profile.id = pei.profile_id
-    LEFT JOIN educational_institution as ei ON ei.id = pei.educational_institution_id
-    LEFT JOIN locality  ON (ei.locality_id = locality.id)
-    LEFT JOIN municipal_area  ON (locality.municipal_area_id = municipal_area.id)
-    LEFT JOIN region  ON (locality.region_id = region.id OR municipal_area.region_id = region.id)
-    WHERE pei.role = 'TEACHER'
-) TO '/tmp/export_34625/teachers_14_12.csv' DELIMITER ',' CSV HEADER;
+-- COPY (
+--     SELECT
+--     profile.full_name as "ФИО",
+--     profile.email as "Email",
+--     profile.phone as "Телефон",
+--     region.region_name as "Регион",
+--     ei.short_name as "Школа",
+--     CASE WHEN pei.approved_status = 'APPROVED' THEN 'подтверждён'
+--         WHEN pei.approved_status = 'NONE' THEN 'в процессе'
+--         WHEN pei.approved_status = 'NOT_APPROVED'
+--         THEN 'отклонен' END AS "Статус"
+--     FROM profile_educational_institution as pei
+--     LEFT JOIN profile ON profile.id = pei.profile_id
+--     LEFT JOIN educational_institution as ei ON ei.id = pei.educational_institution_id
+--     LEFT JOIN locality  ON (ei.locality_id = locality.id)
+--     LEFT JOIN municipal_area  ON (locality.municipal_area_id = municipal_area.id)
+--     LEFT JOIN region  ON (locality.region_id = region.id OR municipal_area.region_id = region.id)
+--     WHERE pei.role = 'TEACHER'
+-- ) TO '/tmp/export_34625/teachers_14_12.csv' DELIMITER ',' CSV HEADER;
 
 
 COPY (
