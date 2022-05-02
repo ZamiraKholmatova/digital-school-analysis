@@ -35,3 +35,13 @@ COPY educational_course_type(id, type_name)  TO '/tmp/export_34625/educational_c
 
 -- statistics type description
 COPY statistic_type  TO '/tmp/export_34625/statistic_type_16.11.csv' DELIMITER ',' CSV HEADER;
+
+COPY(
+	SELECT
+	profile_id,
+	course_name,
+	system_code
+	FROM
+	profile_paid_cok_course_2021
+	LEFT JOIN educational_courses on profile_paid_cok_course_2021.cok_educational_course_id = educational_courses.id
+)TO '/tmp/export_34625/payed2021.csv' DELIMITER ',' CSV HEADER;
