@@ -45,3 +45,15 @@ COPY(
 	profile_paid_cok_course_2021
 	LEFT JOIN educational_courses on profile_paid_cok_course_2021.cok_educational_course_id = educational_courses.id
 )TO '/tmp/export_34625/payed2021.csv' DELIMITER ',' CSV HEADER;
+
+COPY(
+	SELECT
+	ppacc.profile_id,
+	course_name as "Наименование ЦОК",
+	amount_pay as "payed_sum",
+	period as "Месяц",
+	ppacc.system_code
+	FROM profile_payment_amount_cok_course as ppacc
+	LEFT JOIN educational_courses on ppacc.cok_educational_course_id = educational_courses.id
+	WHERE period = '3.2022' or period = '2.2022'
+)TO '/tmp/export_34625/payed_this_year.csv' DELIMITER ',' CSV HEADER;
