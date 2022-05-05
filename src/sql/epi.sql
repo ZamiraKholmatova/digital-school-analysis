@@ -200,3 +200,27 @@ COPY (
     LEFT JOIN started_approving ON profile.id = started_approving.approving
     where pei.role = 'INSTITUTE'
 ) TO '/tmp/export_34625/director_approving.csv' DELIMITER ',' CSV HEADER;
+
+COPY (
+    SELECT
+    external_system.short_name AS platform_name,
+    pei.profile_id,
+    pei.approved_status,
+    pei.role,
+    pei.educational_institution_id,
+    eins.short_name,
+    eins.inn,
+    eins.region,
+    eins.locality,
+    eins.municipal_area
+    FROM smartcode_external_system AS activated
+    LEFT JOIN smartcode
+    ON activated.smartcode_id = smartcode.id
+    LEFT JOIN profile_educational_institution AS pei
+    ON pei.profile_id = smartcode.profile_id
+    LEFT JOIN educational_institution AS eins
+    ON pei.educational_institution_id = eins.id
+    LEFT JOIN external_system
+    ON activated.system_code = external_system.system_code
+    WHERE external_system.short_name = 'Фоксфорд'
+) TO '/tmp/export_34625/foxford.csv' DELIMITER ',' CSV HEADER;
