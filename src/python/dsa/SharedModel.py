@@ -174,10 +174,9 @@ class SharedModel:
     def load_billing_info(self, path):
         if self.is_new_version(path):
             logging.info("Importing billing info")
-            data = self.read_table_dump(path, dtype={"price": "Float32", "approved": "Float32"}, parse_dates=['approved_date'], infer_datetime_format=True) \
-                .rename({"short_name": "provider"}, axis=1)
-
-            # assert data["price"].isna().any() is False
+            courses_prices = self.read_table_dump(path, dtype={"price": "Float32", "approved": "Float32"}, parse_dates=['approved_date'], infer_datetime_format=True)
+            external_system_df = pd.DataFrame([{'system_code': sc, 'short_name': sn} for (sc, sn) in self.external_system.items()])
+            data = pd.merge(courses_prices, external_system_df, how= 'left', on = 'system_code').rename({'short_name':'provider'}, axis = 1)
 
             data.drop_duplicates(subset=["provider", "course_name"], inplace=True)
             data.eval("approved = approved.fillna(0.)", inplace=True)

@@ -57,3 +57,19 @@ COPY(
 	LEFT JOIN educational_courses on ppacc.cok_educational_course_id = educational_courses.id
 	WHERE period = '3.2022' or period = '2.2022'
 )TO '/tmp/export_34625/payed_this_year.csv' DELIMITER ',' CSV HEADER;
+
+COPY(
+	SELECT
+	educational_courses.id,
+	external_id,
+	course_name,
+	system_code,
+	approved_date,
+	cost_per_month as "price",
+	max_cost as "max_price",
+	(CASE WHEN educational_courses.approved='t' THEN 1 ELSE NULL END) AS "approved"
+	FROM educational_courses
+	LEFT JOIN cok_course_cost
+	ON educational_courses.id = cok_educational_course_id
+	WHERE deleted='f' AND educational_courses.approved='t' AND parent_id is null
+)TO '/tmp/export_34625/courses.csv' DELIMITER ',' CSV HEADER;
