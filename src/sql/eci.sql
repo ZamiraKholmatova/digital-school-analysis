@@ -55,7 +55,7 @@ COPY(
 	ppacc.system_code
 	FROM profile_payment_amount_cok_course as ppacc
 	LEFT JOIN educational_courses on ppacc.cok_educational_course_id = educational_courses.id
-	WHERE period = '3.2022' or period = '2.2022'
+	WHERE period = '4.2022' or period = '3.2022' or period = '2.2022'
 )TO '/tmp/export_34625/payed_this_year.csv' DELIMITER ',' CSV HEADER;
 
 COPY(
