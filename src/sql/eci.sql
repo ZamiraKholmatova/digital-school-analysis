@@ -52,7 +52,7 @@ COPY(
 	course_name as "Наименование ЦОК",
 	amount_pay as "payed_sum",
 	period as "Месяц",
-	ppacc.system_code
+	educational_courses.system_code
 	FROM profile_payment_amount_cok_course as ppacc
 	LEFT JOIN educational_courses on ppacc.cok_educational_course_id = educational_courses.id
 	WHERE period = '4.2022' or period = '3.2022' or period = '2.2022'
